@@ -119,7 +119,11 @@
               <div class="control-box center-box">
                 <span>Cronometro / Quarto</span>
                 <div class="chrono-selector">
-                  <input type="text" id="val-clock" value="10:00" class="clock-input">
+                  <div style="display: flex; align-items: center; gap: 8px; justify-content: center; margin-bottom: 5px;">
+                    <button class="btn-group-mini" style="padding: 4px 8px; background: rgba(255,255,255,0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 4px; cursor: pointer; font-size: 0.75rem;" onclick="adjustClock(-10)">-10s</button>
+                    <input type="text" id="val-clock" value="10:00" class="clock-input">
+                    <button class="btn-group-mini" style="padding: 4px 8px; background: rgba(255,255,255,0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 4px; cursor: pointer; font-size: 0.75rem;" onclick="adjustClock(10)">+10s</button>
+                  </div>
                   <div class="btn-group-mini">
                     <button id="btn-toggle-clock">Avvia/Pausa</button>
                   </div>
@@ -191,7 +195,7 @@
         <span id="zoomLabel">1.0x</span>
         <button id="zoomIn">+</button>
       </div>
-      <div id="statusB">In attesa di avvio...</div>
+      <div id="statusB-cam">In attesa di avvio...</div>
     </div>
 
     <!-- ==============================================

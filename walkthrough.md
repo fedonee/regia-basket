@@ -37,10 +37,22 @@ We have successfully performed a complete rewrite of both the server-side signal
 
 ---
 
+## Bug Fixes & Additional Enhancements
+
+We identified and resolved the following issues:
+1. **Duplicate statusB DOM Element ID**: Screen B had a status display element with `id="statusB"`, colliding with the director status monitor `statusB` on Screen A. We renamed the screen B element to `statusB-cam` and updated all JS handlers in Role B logic.
+2. **Auto-connection for Role A on Page Reload**: If the director reloads the page with `?match=ID&role=A`, the client now automatically reconnects to the WebSocket signaling room so connection indicators continue functioning.
+3. **Server Peer Joined Status Recall**: When Director A joins a room where B or C are already connected, the server immediately notifies A of their presence (`type: 'joined'`) so connection indicators update instantly without requiring B or C to reconnect.
+4. **Manual Clock Controls**: Added explicit `-10s` and `+10s` buttons next to the clock input on screen A to simplify precise timing corrections.
+
+---
+
 ## Verification Checklist
 
 - [x] Dependencies and script checks in `package.json` -> OK
 - [x] Server compile and listen test -> OK (Successfully tested booting on port 3001)
 - [x] Clean WebRTC routing matches -> OK
 - [x] UI buttons and state targets -> OK
+- [x] Duplicate DOM element ID resolved -> OK
+- [x] Director auto-signaling recall and connection -> OK
 - [x] Git push -> Done

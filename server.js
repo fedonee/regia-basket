@@ -46,6 +46,10 @@ wss.on('connection', (ws) => {
             if (host) {
               sendTo(host, { type: 'joined', role });
             }
+          } else if (role === 'A') {
+            const room = rooms[matchId];
+            if (room.B) sendTo(ws, { type: 'joined', role: 'B' });
+            if (room.C) sendTo(ws, { type: 'joined', role: 'C' });
           }
           break;
         }

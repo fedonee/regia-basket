@@ -119,8 +119,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupUIEventListeners();
   setupZoomEventListeners();
   
-  if (matchId && (role === 'B' || role === 'C')) {
-    // If role and match are in URL, auto-connect as client
+  if (matchId) {
+    // If match is in URL, auto-connect to signaling
     connectToSignaling();
   }
   
@@ -247,7 +247,7 @@ function connectToSignaling() {
   ws.onclose = () => {
     console.log('Connessione WebSocket chiusa.');
     if (role === 'B') {
-      document.getElementById('statusB').textContent = 'Disconnesso';
+      document.getElementById('statusB-cam').textContent = 'Disconnesso';
     } else if (role === 'C') {
       const statusEl = document.getElementById('status-ocr-c');
       if (statusEl) {
@@ -272,14 +272,20 @@ function connectToSignaling() {
 
 async function handleMessageA(msg) {
   if (msg.type === 'joined') {
-    document.getElementById('status' + msg.role).textContent = msg.role + ': connesso ✓';
+    if (msg.role === 'B') {
+      document.getElementById('statusB').textContent = 'B connesso ✓';
+    } else if (msg.role === 'C') {
+      document.getElementById('statusC').textContent = 'C connessa ✓';
+    }
     checkPeersReady();
   }
   
   if (msg.type === 'peerDisconnected') {
-    document.getElementById('status' + msg.role).textContent = msg.role + ': in attesa...';
     if (msg.role === 'B') {
+      document.getElementById('statusB').textContent = 'B: in attesa...';
       document.getElementById('statusVideo').textContent = 'Video B: in attesa...';
+    } else if (msg.role === 'C') {
+      document.getElementById('statusC').textContent = 'C: in attesa...';
     }
     checkPeersReady();
   }
@@ -322,7 +328,7 @@ async function handleMessageA(msg) {
 
 async function handleMessageB(msg) {
   if (msg.type === 'joined') {
-    document.getElementById('statusB').textContent = 'Connesso. In attesa di avvio...';
+    document.getElementById('statusB-cam').textContent = 'Connesso. In attesa di avvio...';
   }
   if (msg.type === 'start') {
     await startWebRTC();
@@ -359,7 +365,7 @@ function checkPeersReady() {
   const statusCText = document.getElementById('statusC').textContent;
   
   const isBConnected = statusBText.includes('connesso');
-  const isCConnected = statusCText.includes('connesso');
+  const isCConnected = statusCText.includes('connessa');
   
   if (isBConnected && isCConnected) {
     btnAvvia.classList.remove('disabled');
@@ -440,7 +446,7 @@ async function initB() {
     video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
     audio: true
   }).catch(err => {
-    document.getElementById('statusB').textContent = 'Errore fotocamera: ' + err.message;
+    document.getElementById('statusB-cam').textContent = 'Errore fotocamera: ' + err.message;
     throw err;
   });
 
@@ -476,7 +482,7 @@ async function initB() {
   }
   drawLoop();
 
-  document.getElementById('statusB').textContent = 'Fotocamera attiva. In attesa di avvio...';
+  document.getElementById('statusB-cam').textContent = 'Fotocamera attiva. In attesa di avvio...';
 }
 
 async function startWebRTC() {
@@ -504,7 +510,7 @@ async function startWebRTC() {
   };
 
   pcB.oniceconnectionstatechange = () => {
-    document.getElementById('statusB').textContent = 'ICE: ' + pcB.iceConnectionState;
+    document.getElementById('statusB-cam').textContent = 'ICE: ' + pcB.iceConnectionState;
   };
 
   const offer = await pcB.createOffer();
@@ -635,7 +641,7 @@ function handleCameraError(err, roleLabel) {
     msg = "Nessuna fotocamera trovata.";
   }
   
-  const errorEl = document.getElementById(roleLabel === 'B' ? 'statusB' : 'status-ocr-c');
+  const errorEl = document.getElementById(roleLabel === 'B' ? 'statusB-cam' : 'status-ocr-c');
   if (errorEl) {
     if (roleLabel === 'B') {
       errorEl.textContent = "Errore Camera";
@@ -922,6 +928,18 @@ window.adjustFouls = function(team, amt) {
 window.adjustQuarter = function(amt) {
   let newVal = Math.max(1, Math.min(5, gameState.quarter + amt));
   updateGameStateField('quarter', newVal, true);
+};
+
+window.adjustClock = function(seconds) {
+  let parts = gameState.clock.split(':');
+  let min = parseInt(parts[0], 10);
+  let sec = parseInt(parts[1], 10);
+  let totalSecs = min * 60 + sec + seconds;
+  totalSecs = Math.max(0, totalSecs);
+  let newMin = Math.floor(totalSecs / 60);
+  let newSec = totalSecs % 60;
+  let newClock = `${newMin.toString().padStart(2, '0')}:${newSec.toString().padStart(2, '0')}`;
+  updateGameStateField('clock', newClock, true);
 };
 
 // Simple manual clock timer decrement for simulation/fallback
