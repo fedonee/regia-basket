@@ -1,0 +1,17 @@
+{
+  "name": "regia-basket-mvp",
+  "version": "1.0.0",
+  "description": "App di regia basket con overlay TV ed OCR tabellone",
+  "main": "server.js",
+  "scripts": {
+    "download-libs": "node download-opencv.js",
+    "build": "node download-opencv.js",
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.16.0",
+    "uuid": "^9.0.1"
+  }
+}

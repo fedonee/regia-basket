@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>CourtCast Broadcast System</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Service Worker Status Alert -->
+  <div id="offline-banner" class="banner hidden">Offline Mode Attiva - Risorse in Cache</div>
+
+  <!-- Main Container -->
+  <div id="app" class="app-container">
+    
+    <!-- ==============================================
+         1. ROLE SETUP (Initial screen for A / Creating Match)
+         ============================================== -->
+    <div id="screen-setup" class="screen card active">
+      <div class="header-logo">
+        <h1>CourtCast</h1>
+        <span class="badge badge-primary">Regia Basket MVP</span>
+      </div>
+      <p class="description">Configura la partita per generare la stanza di regia e i QR code di connessione per i dispositivi ausiliari.</p>
+      
+      <div class="form-group">
+        <label for="input-home">Squadra Casa</label>
+        <input type="text" id="input-home" value="CASA" placeholder="Nome squadra di casa">
+      </div>
+      <div class="form-group">
+        <label for="input-away">Squadra Ospiti</label>
+        <input type="text" id="input-away" value="OSPITI" placeholder="Nome squadra ospite">
+      </div>
+      
+      <button id="btn-create-match" class="btn btn-large btn-glow">Crea Partita e Avvia Regia</button>
+      
+      <div class="device-reqs">
+        <h3>Requisiti per iPhone (iOS 16.4+):</h3>
+        <ul>
+          <li><strong>Dispositivo A (Regia):</strong> Schermo sbloccato, Safari in primo piano, alimentato da Power Bank.</li>
+          <li><strong>Dispositivi B e C:</strong> Connessi all'hotspot Wi-Fi di A prima di scansionare il QR.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ==============================================
+         2. DISPOSITIVO A — REGIA (Director)
+         ============================================== -->
+    <div id="screen-director" class="screen hidden">
+      <div class="director-layout">
+        <!-- Main Column: Video & Overlay Canvas -->
+        <div class="main-column">
+          <div class="panel-video card">
+            <div class="panel-header">
+              <h2>Compositing Broadcast (Live Preview)</h2>
+              <div class="recording-status">
+                <span id="rec-dot" class="dot"></span>
+                <span id="rec-timer">00:00:00</span>
+              </div>
+            </div>
+            
+            <div class="canvas-wrapper">
+              <canvas id="canvas-broadcast" width="1280" height="720"></canvas>
+            </div>
+            
+            <div class="recording-controls">
+              <button id="btn-toggle-rec" class="btn btn-danger disabled" disabled>Inquadra e Registra</button>
+              <button id="btn-share-video" class="btn btn-primary hidden">Condividi Video</button>
+              <button id="btn-download-video" class="btn btn-secondary hidden">Scarica File</button>
+            </div>
+          </div>
+          
+          <!-- Manual Correction Controls -->
+          <div class="panel-controls card">
+            <h2>Pannello Controllo Rapido & Correzione Manuale</h2>
+            
+            <div class="grid-controls">
+              <!-- Home Score Panel -->
+              <div class="control-box">
+                <div class="control-box-header">
+                  <span id="label-home-team">CASA</span>
+                  <span id="badge-home-manual" class="badge badge-manual hidden">Manuale</span>
+                </div>
+                <div class="score-selector">
+                  <button class="btn-adjust" onclick="adjustScore('home', -1)">-</button>
+                  <div class="score-value" id="val-home-score">0</div>
+                  <button class="btn-adjust" onclick="adjustScore('home', 1)">+</button>
+                </div>
+                <div class="fouls-selector">
+                  <span>Falli: <strong id="val-home-fouls">0</strong></span>
+                  <div class="btn-group-mini">
+                    <button onclick="adjustFouls('home', -1)">-</button>
+                    <button onclick="adjustFouls('home', 1)">+</button>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Match Clock / Period Panel -->
+              <div class="control-box center-box">
+                <span>Cronometro / Quarto</span>
+                <div class="chrono-selector">
+                  <input type="text" id="val-clock" value="10:00" class="clock-input">
+                  <div class="btn-group-mini">
+                    <button id="btn-toggle-clock">Avvia/Pausa</button>
+                  </div>
+                  <span id="badge-clock-manual" class="badge badge-manual hidden">Manuale</span>
+                </div>
+                <div class="quarter-selector">
+                  <span>Quarto: <strong id="val-quarter">1</strong></span>
+                  <div class="btn-group-mini">
+                    <button onclick="adjustQuarter(-1)">-</button>
+                    <button onclick="adjustQuarter(1)">+</button>
+                  </div>
+                  <span id="badge-quarter-manual" class="badge badge-manual hidden">Manuale</span>
+                </div>
+              </div>
+              
+              <!-- Away Score Panel -->
+              <div class="control-box">
+                <div class="control-box-header">
+                  <span id="label-away-team">OSPITI</span>
+                  <span id="badge-away-manual" class="badge badge-manual hidden">Manuale</span>
+                </div>
+                <div class="score-selector">
+                  <button class="btn-adjust" onclick="adjustScore('away', -1)">-</button>
+                  <div class="score-value" id="val-away-score">0</div>
+                  <button class="btn-adjust" onclick="adjustScore('away', 1)">+</button>
+                </div>
+                <div class="fouls-selector">
+                  <span>Falli: <strong id="val-away-fouls">0</strong></span>
+                  <div class="btn-group-mini">
+                    <button onclick="adjustFouls('away', -1)">-</button>
+                    <button onclick="adjustFouls('away', 1)">+</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Sidebar: QR Code & Connections Status -->
+        <div class="sidebar-column">
+          <!-- Setup room & QR code panel -->
+          <div class="panel-qr card">
+            <div class="panel-header">
+              <h2>Stanza: <span id="display-match-id">------</span></h2>
+            </div>
+            
+            <div class="qr-container">
+              <div class="qr-item">
+                <h3>Fotocamera Partita (B)</h3>
+                <div id="qrcode-b"></div>
+                <div id="status-b" class="status-indicator disconnected">Disconnesso</div>
+              </div>
+              <div class="qr-item">
+                <h3>Camera Tabellone (C)</h3>
+                <div id="qrcode-c"></div>
+                <div id="status-c" class="status-indicator disconnected">Disconnesso</div>
+              </div>
+            </div>
+            <p class="small-text">Connetti i dispositivi B e C all'hotspot Wi-Fi locale di questo iPhone PRIMA di scansionare i QR.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==============================================
+         3. DISPOSITIVO B — CAMERA PARTITA (Match Camera)
+         ============================================== -->
+    <div id="screen-camera-match" class="screen card hidden">
+      <h2>Camera Partita (Dispositivo B)</h2>
+      <div class="connection-status-panel">
+        Stato Connessione: <span id="status-camera-b" class="badge badge-error">Disconnesso</span>
+      </div>
+      
+      <div class="video-preview-wrapper">
+        <video id="video-preview-b" autoplay playsinline muted></video>
+      </div>
+      <p class="instruction">Inquadra il campo. Questo flusso video è inviato direttamente alla regia via WebRTC locale.</p>
+    </div>
+
+    <!-- ==============================================
+         4. DISPOSITIVO C — CAMERA TABELLONE (Scoreboard OCR)
+         ============================================== -->
+    <div id="screen-camera-board" class="screen hidden">
+      <div class="ocr-layout">
+        <!-- Main Calibration & Camera Area -->
+        <div class="ocr-camera-panel card">
+          <div class="panel-header">
+            <h2>Calibrazione OCR Tabellone (C)</h2>
+            <div>
+              Stato: <span id="status-ocr-c" class="badge badge-error">Disconnesso</span>
+              OpenCV: <span id="status-opencv" class="badge badge-neutral">Caricamento...</span>
+            </div>
+          </div>
+          
+          <div class="ocr-view-wrapper">
+            <video id="video-preview-c" autoplay playsinline muted class="hidden"></video>
+            <canvas id="canvas-calibration"></canvas>
+          </div>
+          
+          <div class="calibration-controls">
+            <div class="roi-selector-group">
+              <label for="select-roi">Seleziona Campo da Calibrare:</label>
+              <select id="select-roi" class="select-premium">
+                <option value="homeScore">Punti Casa (2 cifre)</option>
+                <option value="awayScore">Punti Ospiti (2 cifre)</option>
+                <option value="clock">Cronometro (4 cifre)</option>
+                <option value="quarter">Quarto (1 cifra)</option>
+                <option value="homeFouls">Falli Casa (1 o 2 cifre)</option>
+                <option value="awayFouls">Falli Ospiti (1 o 2 cifre)</option>
+              </select>
+            </div>
+            
+            <button id="btn-clear-roi" class="btn btn-secondary">Azzera 4 Punti ROI Corrente</button>
+          </div>
+        </div>
+        
+        <!-- OCR Diagnostics & Warped Previews Sidebar -->
+        <div class="ocr-diagnostics-panel card">
+          <h2>Monitor Letture & Correzioni</h2>
+          
+          <!-- Pre-processing / Threshold controls -->
+          <div class="settings-box">
+            <h3>Filtro Immagine</h3>
+            <div class="form-group-row">
+              <label for="slider-threshold">Soglia Override (0 = Otsu Auto):</label>
+              <input type="range" id="slider-threshold" min="0" max="255" value="0">
+              <span id="val-threshold-slider">Auto</span>
+            </div>
+          </div>
+
+          <div class="warped-previews-container">
+            <!-- Dynamic list of calibrated areas with their warped canvas and OCR output -->
+            <div class="warped-preview-item" data-field="homeScore">
+              <span class="preview-label">Punti Casa</span>
+              <div class="preview-canvas-box">
+                <canvas id="warped-homeScore" width="80" height="60"></canvas>
+                <canvas id="thresh-homeScore" width="80" height="60"></canvas>
+              </div>
+              <span class="preview-val" id="ocr-val-homeScore">--</span>
+            </div>
+            
+            <div class="warped-preview-item" data-field="awayScore">
+              <span class="preview-label">Punti Ospiti</span>
+              <div class="preview-canvas-box">
+                <canvas id="warped-awayScore" width="80" height="60"></canvas>
+                <canvas id="thresh-awayScore" width="80" height="60"></canvas>
+              </div>
+              <span class="preview-val" id="ocr-val-awayScore">--</span>
+            </div>
+            
+            <div class="warped-preview-item" data-field="clock">
+              <span class="preview-label">Cronometro</span>
+              <div class="preview-canvas-box">
+                <canvas id="warped-clock" width="160" height="60"></canvas>
+                <canvas id="thresh-clock" width="160" height="60"></canvas>
+              </div>
+              <span class="preview-val" id="ocr-val-clock">--:--</span>
+            </div>
+            
+            <div class="warped-preview-item" data-field="quarter">
+              <span class="preview-label">Quarto</span>
+              <div class="preview-canvas-box">
+                <canvas id="warped-quarter" width="40" height="60"></canvas>
+                <canvas id="thresh-quarter" width="40" height="60"></canvas>
+              </div>
+              <span class="preview-val" id="ocr-val-quarter">-</span>
+            </div>
+            
+            <div class="warped-preview-item" data-field="homeFouls">
+              <span class="preview-label">Falli Casa</span>
+              <div class="preview-canvas-box">
+                <canvas id="warped-homeFouls" width="40" height="60"></canvas>
+                <canvas id="thresh-homeFouls" width="40" height="60"></canvas>
+              </div>
+              <span class="preview-val" id="ocr-val-homeFouls">-</span>
+            </div>
+            
+            <div class="warped-preview-item" data-field="awayFouls">
+              <span class="preview-label">Falli Ospiti</span>
+              <div class="preview-canvas-box">
+                <canvas id="warped-awayFouls" width="40" height="60"></canvas>
+                <canvas id="thresh-awayFouls" width="40" height="60"></canvas>
+              </div>
+              <span class="preview-val" id="ocr-val-awayFouls">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Hidden video element for local stream extraction of A -->
+  <video id="hidden-video-a" autoplay playsinline muted class="hidden"></video>
+
+  <!-- Load Local Libraries -->
+  <script src="libs/qrcode.min.js"></script>
+  <script src="libs/jsqr.js"></script>
+  <script src="libs/opencv.js" async></script>
+  <script src="app.js"></script>
+</body>
+</html>
