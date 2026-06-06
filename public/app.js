@@ -45,6 +45,22 @@ const ocrMatchCount = {
   awayFouls: 0
 };
 
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ]
+};
+
 // Role A (Director) WebRTC Connection to B
 let pcA = null;
 const iceQueueA = [];
@@ -292,9 +308,7 @@ async function handleMessageA(msg) {
 
   if (msg.type === 'offer') {
     if (!pcA) {
-      pcA = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
+      pcA = new RTCPeerConnection(ICE_CONFIG);
       bindPeerConnectionAEvents();
     }
     await pcA.setRemoteDescription(new RTCSessionDescription(msg.sdp));
@@ -383,9 +397,7 @@ function checkPeersReady() {
 async function avviaPartita() {
   ws.send(JSON.stringify({ type: 'start', matchId }));
 
-  pcA = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-  });
+  pcA = new RTCPeerConnection(ICE_CONFIG);
 
   bindPeerConnectionAEvents();
 }
@@ -486,9 +498,7 @@ async function initB() {
 }
 
 async function startWebRTC() {
-  pcB = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-  });
+  pcB = new RTCPeerConnection(ICE_CONFIG);
 
   // Capture stream from B's canvas
   const canvasStream = canvasEl.captureStream(30);
