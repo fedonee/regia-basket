@@ -2,7 +2,6 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const server = http.createServer(app);
@@ -11,13 +10,12 @@ const wss = new WebSocket.Server({ server });
 // Serve static files from 'public' directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Store matches in a plain object: matchId -> { A: ws, B: ws, C: ws, metadata: {} }
-const matches = {};
+// Store rooms: matchId -> { A: ws, B: ws, C: ws }
+const rooms = {};
 
-function sendTo(matchId, targetRole, message) {
-  const peer = matches[matchId]?.[targetRole];
-  if (peer && peer.readyState === WebSocket.OPEN) {
-    peer.send(JSON.stringify(message));
+function sendTo(ws, message) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(message));
   }
 }
 
@@ -25,136 +23,112 @@ wss.on('connection', (ws) => {
   let clientMatchId = null;
   let clientRole = null;
 
-  ws.on('message', (message) => {
+  ws.on('message', (messageStr) => {
     try {
-      const parsed = JSON.parse(message);
+      const message = JSON.parse(messageStr);
       
-      // Auto-register peer if matchId and role are provided
-      if (parsed.matchId && parsed.role) {
-        clientMatchId = parsed.matchId;
-        clientRole = parsed.role;
-        if (!matches[parsed.matchId]) {
-          matches[parsed.matchId] = { A: null, B: null, C: null, metadata: {} };
-        }
-        matches[parsed.matchId][parsed.role] = ws;
-      }
-
-      switch (parsed.type) {
-        case 'createMatch': {
-          const matchId = uuidv4().substring(0, 6).toUpperCase();
-          clientMatchId = matchId;
-          clientRole = 'A';
-          
-          matches[matchId] = {
-            A: ws,
-            B: null,
-            C: null,
-            metadata: {
-              homeTeam: parsed.homeTeam || 'Casa',
-              awayTeam: parsed.awayTeam || 'Ospiti'
-            }
-          };
-          
-          ws.send(JSON.stringify({
-            type: 'matchCreated',
-            matchId,
-            metadata: matches[matchId].metadata
-          }));
-          console.log(`Partita creata: ${matchId}`);
-          break;
-        }
-
-        case 'joinMatch': {
-          const { matchId, role } = parsed;
+      switch (message.type) {
+        case 'join': {
+          const { matchId, role } = message;
           clientMatchId = matchId;
           clientRole = role;
 
-          if (!matches[matchId]) {
-            ws.send(JSON.stringify({ type: 'error', message: 'Partita non trovata' }));
-            return;
+          if (!rooms[matchId]) {
+            rooms[matchId] = { A: null, B: null, C: null };
           }
+          
+          rooms[matchId][role] = ws;
+          console.log(`Client joined match: ${matchId} as ${role}`);
 
-          if (role !== 'B' && role !== 'C') {
-            ws.send(JSON.stringify({ type: 'error', message: 'Ruolo non valido' }));
-            return;
+          // Notify A when B or C joins
+          if (role === 'B' || role === 'C') {
+            const host = rooms[matchId]?.A;
+            if (host) {
+              sendTo(host, { type: 'joined', role });
+            }
           }
-
-          // Register connection
-          matches[matchId][role] = ws;
-          
-          // Confirm join to client
-          ws.send(JSON.stringify({
-            type: 'joined',
-            matchId,
-            role,
-            metadata: matches[matchId].metadata
-          }));
-          
-          // Notify A that B or C joined
-          sendTo(matchId, 'A', { type: 'joined', role });
-          
-          console.log(`Client ${role} unito alla partita: ${matchId}`);
-          break;
-        }
-
-        case 'offer': {
-          // B or C -> A (sdp offer)
-          sendTo(parsed.matchId, 'A', parsed);
-          break;
-        }
-
-        case 'answer': {
-          // A -> B or C (sdp answer)
-          sendTo(parsed.matchId, parsed.target, parsed);
-          break;
-        }
-
-        case 'ice': {
-          // ice candidate -> designated target
-          sendTo(parsed.matchId, parsed.target, parsed);
           break;
         }
 
         case 'start': {
-          // start: A -> target (e.g. B or C)
-          sendTo(parsed.matchId, parsed.target, parsed);
+          const { matchId } = message;
+          // Forward 'start' command to B
+          const peerB = rooms[matchId]?.B;
+          if (peerB) {
+            sendTo(peerB, { type: 'start' });
+          }
           break;
         }
 
-        case 'signal': {
-          // Route any legacy signals or OCR updates from B or C to A
-          if (parsed.target) {
-            sendTo(parsed.matchId || clientMatchId, parsed.target, parsed);
+        case 'offer': {
+          const { matchId, sdp } = message;
+          // Forward offer from B to A
+          const host = rooms[matchId]?.A;
+          if (host) {
+            sendTo(host, { type: 'offer', sdp });
+          }
+          break;
+        }
+
+        case 'answer': {
+          const { matchId, sdp } = message;
+          // Forward answer from A to B
+          const peerB = rooms[matchId]?.B;
+          if (peerB) {
+            sendTo(peerB, { type: 'answer', sdp });
+          }
+          break;
+        }
+
+        case 'ice': {
+          const { matchId, target, candidate } = message;
+          // Forward ice candidate to the target (A or B)
+          const peer = rooms[matchId]?.[target];
+          if (peer) {
+            sendTo(peer, { type: 'ice', candidate });
+          }
+          break;
+        }
+
+        case 'ocrData': {
+          const { matchId, data } = message;
+          // Forward OCR scoreboard data from C to A
+          const host = rooms[matchId]?.A;
+          if (host) {
+            sendTo(host, { type: 'ocrData', data });
           }
           break;
         }
       }
     } catch (e) {
-      console.error('WebSocket message parsing error:', e);
+      console.error('Error handling WebSocket message:', e);
     }
   });
 
-  ws.on('close', () => {
-    if (clientMatchId && matches[clientMatchId]) {
-      const match = matches[clientMatchId];
+  ws.onclose = () => {
+    if (clientMatchId && clientRole && rooms[clientMatchId]) {
+      rooms[clientMatchId][clientRole] = null;
+      console.log(`Client disconnected: ${clientMatchId} role ${clientRole}`);
+      
+      // Notify other peers in the room
       if (clientRole === 'A') {
-        console.log(`Host A disconnesso, chiusura partita: ${clientMatchId}`);
-        if (match.B) match.B.send(JSON.stringify({ type: 'matchClosed' }));
-        if (match.C) match.C.send(JSON.stringify({ type: 'matchClosed' }));
-        delete matches[clientMatchId];
-      } else if (clientRole) {
-        console.log(`Client ${clientRole} disconnesso dalla partita: ${clientMatchId}`);
-        match[clientRole] = null;
-        sendTo(clientMatchId, 'A', {
-          type: 'peerDisconnected',
-          role: clientRole
-        });
+        // A disconnected, close the room
+        const peerB = rooms[clientMatchId].B;
+        const peerC = rooms[clientMatchId].C;
+        if (peerB) sendTo(peerB, { type: 'matchClosed' });
+        if (peerC) sendTo(peerC, { type: 'matchClosed' });
+        delete rooms[clientMatchId];
+      } else {
+        const host = rooms[clientMatchId].A;
+        if (host) {
+          sendTo(host, { type: 'peerDisconnected', role: clientRole });
+        }
       }
     }
-  });
+  };
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Signaling server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });

@@ -1,49 +1,46 @@
-# Walkthrough — CourtCast Broadcast System Clean Rewrite
+# Walkthrough — CourtCast MVP Complete Rewrite & General Debug
 
-We have completed the clean rewrite of the WebRTC signaling routing, Device B's camera preview and zoom canvas loop, and the local development OpenCV caching check.
+We have successfully performed a complete rewrite of both the server-side signaling and the client-side roles to meet the requested specifications exactly.
 
 ---
 
 ## Architectural Changes & Updates
 
-### 1. Clean WebSocket Server Routing (`server.js`)
-- **Simplified Matches Map**: Built a clear plain object registry `matches` containing `{ A: ws, B: ws, C: ws, metadata: {} }` mapped to each `matchId`.
-- **Targeted Message Routing**: Implemented a clean `sendTo(matchId, targetRole, message)` routing function.
-- **Explicit Signal Handlers**: Added WebSocket routing cases for:
-  - `offer` (B/C -> A)
-  - `answer` (A -> B/C target)
-  - `ice` (anyone -> target)
-  - `joined` (server -> A notification)
-  - `start` (A -> B signaling)
-  - `signal` (generic signals and OCR score packet transmission C -> A)
+### 1. Server-Side Signaling (`server.js` & `package.json`)
+- **Express & WS Dependencies**: Verified that `express` and `ws` are the only production dependencies. Removed external dependencies (like `uuid`) and generated shorter, native match IDs using pure Javascript `Math.random()`.
+- **Match Registry (`rooms`)**: Maintained room mappings as a plain object `rooms[matchId] = { A: ws, B: ws, C: ws }`.
+- **Targeted Message Routing**: Managed exact routing case switches for:
+  - `join` (client -> server to register in room, notifying A of joining).
+  - `start` (A -> server to forward start command to B).
+  - `offer` (B -> server to forward to A).
+  - `answer` (A -> server to forward to B).
+  - `ice` (peers -> server to forward to target role).
+  - `ocrData` (C -> server to forward to A for score updates).
 
-### 2. Device B Camera Preview & Zoom Rewrite (`public/index.html` & `public/app.js`)
-- **Direct Canvas Preview**: Replaced the nested Video & Canvas combo on B's screen with a single `<canvas id="previewB"></canvas>`.
-- **Immediate getUserMedia**: Started B's camera session immediately upon page load to give instantaneous feedback, rather than waiting for WebSocket joins.
-- **On-Demand WebRTC**: Configured B to start WebRTC offering and streaming *only* when A sends the `'start'` command message.
-- **Local Zoom Controls**: Built large touch-friendly button controls directly inside B's screen card to adjust `zoomLevel` central cropping.
+### 2. Premium TV Broadcast Frontend (`public/index.html` & `public/style.css`)
+- **Role B Screen**: Configured with a single full-page live preview `<canvas id="preview"></canvas>`, and large visible zoom buttons `[ − ] [ 1.0x ] [ + ]`. Disabled camera mirroring by selecting the back-facing camera (`facingMode: 'environment'`).
+- **Role C Screen**: Setup a direct camera `<video id="video-preview-c">` preview and an overlay `#canvas-calibration` for setting calibration points, with zoom controls and an OpenCV status badge.
+- **Role A Screen**: Director panel with team name setup, connection state indicators for B and C, start button `#btn-avvia` (disabled until B and C are connected), composite broadcast canvas `#canvas-broadcast`, manual score adjusts, and a recording toggle.
 
-### 3. Device A WebRTC Receiver & Connection Handshake
-- **Avvia Trigger Button**: Added a dedicated "Avvia" button (`#btn-avvia`) in Director A's composite broadcast header.
-- **A Handshake Initiation**: Clicking "Avvia" dispatches a `start` command to B, setting up A's `pcA` and preparing to receive B's video stream.
-- **Modular Message Delegates**: Split the legacy monolithic `ws.onmessage` switch block in `app.js` into three clean, role-specific message handlers: `handleMessageA`, `handleMessageB`, and `handleMessageC`.
+### 3. Client JS Logic (`public/app.js`)
+- **Modular Signallers**: Defined role-specific handlers `handleMessageA`, `handleMessageB`, and `handleMessageC` mapping websocket routing cleanly.
+- **WebRTC Handshake Flow**:
+  - A clicking "Avvia" dispatches `'start'` and creates its `RTCPeerConnection`.
+  - B receiving `'start'` instantiates `pcB`, adds the canvas stream, creates the offer, and sends it.
+  - A receiving the offer sets description, creates the answer, and sends it back.
+  - B receiving the answer finishes setRemoteDescription and flushes its ICE queue.
+- **Local Zoom Managers**: Assigned separate zoom values (`zoomLevel` and `zoomLevelC`) and event bindings to prevent camera controls from conflicting on separate roles.
+- **Robust OCR Digits Engine**: Kept sports logic checks, OPFS inline Web Worker recording, and OpenCV perspective warps to process segment boundaries accurately.
 
-### 4. OpenCV Local Caching Check (`download-opencv.js`)
-- **File Exist Check**: Added an early exit check using `fs.existsSync('./public/libs/opencv.js')` to bypass redundant downloads during local development, cutting startup delays.
-
----
-
-## List of Modified Files
-
-- [server.js](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-ab5c0e0df099/Nuova%20cartella%20%282%29/server.js) — Streamlined room mapping and message routing.
-- [download-opencv.js](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-ab5c0e0df099/Nuova%20cartella%20%282%29/download-opencv.js) — Caching validation check.
-- [public/index.html](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-ab5c0e0df099/Nuova%20cartella%20%282%29/public/index.html) — Device B structure, A status monitors, and buttons.
-- [public/style.css](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-ab5c0e0df099/Nuova%20cartella%20%282%29/public/style.css) — Custom styling for B preview canvas and controls.
-- [public/app.js](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-app.js) — B immediate camera init, A click trigger, modular WS handlers, and zoom controls.
+### 4. OpenCV Local Dev Check (`download-opencv.js`)
+- Bypasses download and exits early if `./public/libs/opencv.js` already exists.
 
 ---
 
-## Verification & Status
+## Verification Checklist
 
-- **Syntax Validation**: Checked `server.js` compile check successfully.
-- **Git Status**: Files are copied to workspace, ready to commit and push.
+- [x] Dependencies and script checks in `package.json` -> OK
+- [x] Server compile and listen test -> OK (Successfully tested booting on port 3001)
+- [x] Clean WebRTC routing matches -> OK
+- [x] UI buttons and state targets -> OK
+- [x] Git push -> Done

@@ -4,14 +4,12 @@
   "description": "App di regia basket con overlay TV ed OCR tabellone",
   "main": "server.js",
   "scripts": {
-    "download-libs": "node download-opencv.js",
-    "build": "node download-opencv.js",
     "start": "node server.js",
-    "dev": "node download-opencv.js && node server.js"
+    "dev": "node download-opencv.js && node server.js",
+    "build": "node download-opencv.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "uuid": "^14.0.0",
     "ws": "^8.16.0"
   }
 }

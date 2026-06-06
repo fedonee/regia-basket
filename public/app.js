@@ -5,36 +5,13 @@
 // Parse URL Query Parameters
 const urlParams = new URLSearchParams(window.location.search);
 const matchIdParam = urlParams.get('match');
-const roleParam = urlParams.get('role'); // A (Director/Hotspot), B (Camera), C (OCR)
+const roleParam = urlParams.get('role'); // A (Director), B (Camera), C (OCR)
 
 // Global State
 let matchId = matchIdParam || null;
 let role = roleParam || 'A';
 let ws = null;
 let localStream = null;
-
-// Role A (Director) WebRTC Connection to B
-let pcA;
-const iceQueueA = [];
-let remoteSetA = false;
-
-// Role C connections (Data Channel & Legacy WebRTC)
-let peerConnectionC = null;
-let addIceC = null;
-let setRemoteC = null;
-let dataChannelC = null;
-
-// Role B (Camera) Preview & WebRTC state
-let zoomLevel = 1.0;
-let zoomLevelC = 1.0;
-let cameraStream = null;
-let videoEl = null;
-let canvasEl = null;
-let ctxEl = null;
-let pcB = null;
-const iceQueueB = [];
-let remoteSetB = false;
-let peerConnectionMatch = null;
 
 // Game State (Official state on A, synced to C)
 const gameState = {
@@ -68,34 +45,63 @@ const ocrMatchCount = {
   awayFouls: 0
 };
 
-// WebRTC Configuration
-const rtcConfig = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' }
-  ]
+// Role A (Director) WebRTC Connection to B
+let pcA = null;
+const iceQueueA = [];
+let remoteSetA = false;
+
+// Role B (Camera) Preview & WebRTC state
+let zoomLevel = 1.0;
+let cameraStream = null;
+let videoEl = null;
+let canvasEl = null;
+let ctxEl = null;
+let pcB = null;
+const iceQueueB = [];
+let remoteSetB = false;
+
+// Role C (OCR) state
+let zoomLevelC = 1.0;
+let canvasCalib = null;
+let ctxCalib = null;
+let currentRoiField = 'homeScore';
+let calibPoints = {
+  homeScore: [],
+  awayScore: [],
+  clock: [],
+  quarter: [],
+  homeFouls: [],
+  awayFouls: []
 };
 
-// Initialize PWA Service Worker
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
-      .then((reg) => {
-        console.log('Service Worker registrato con successo.');
-        document.getElementById('offline-banner').classList.add('hidden');
-      })
-      .catch((err) => {
-        console.warn('Errore registrazione Service Worker:', err);
-      });
-  });
-}
+// Colors associated with each ROI calibration
+const roiColors = {
+  homeScore: '#3b82f6',
+  awayScore: '#ef4444',
+  clock: '#f59e0b',
+  quarter: '#a855f7',
+  homeFouls: '#10b981',
+  awayFouls: '#ec4899'
+};
 
-// Handle Offline/Online Status
-window.addEventListener('offline', () => {
-  document.getElementById('offline-banner').classList.remove('hidden');
-});
-window.addEventListener('online', () => {
-  document.getElementById('offline-banner').classList.add('hidden');
-});
+const ocrHistory = {
+  homeScore: [],
+  awayScore: [],
+  clock: [],
+  quarter: [],
+  homeFouls: [],
+  awayFouls: []
+};
+
+// Current calibrated value limits to filter OCR anomalies
+const lastValidOcr = {
+  homeScore: 0,
+  awayScore: 0,
+  clock: '10:00',
+  quarter: 1,
+  homeFouls: 0,
+  awayFouls: 0
+};
 
 // App Initialization
 document.addEventListener('DOMContentLoaded', async () => {
@@ -117,9 +123,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // If role and match are in URL, auto-connect as client
     connectToSignaling();
   }
-
+  
   if (role === 'B') {
     initB().catch(e => console.error("initB error:", e));
+  } else if (role === 'C') {
+    initCameraBoard().catch(e => console.error("initCameraBoard error:", e));
   }
 });
 
@@ -127,19 +135,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 // UI & Screen Routing
 // ==========================================================================
 async function showRoleScreen() {
-  // Hide all screens
   document.getElementById('screen-setup').classList.add('hidden');
   document.getElementById('screen-director').classList.add('hidden');
   document.getElementById('screen-camera-match').classList.add('hidden');
   document.getElementById('screen-camera-board').classList.add('hidden');
-
-  // Toggle zoom controls visibility based on the role
-  const zoomControls = document.getElementById('zoom-controls');
-  if (role === 'B' || role === 'C') {
-    if (zoomControls) zoomControls.classList.remove('hidden');
-  } else {
-    if (zoomControls) zoomControls.classList.add('hidden');
-  }
 
   if (!matchId && role === 'A') {
     document.getElementById('screen-setup').classList.remove('hidden');
@@ -148,15 +147,12 @@ async function showRoleScreen() {
     initDirector();
   } else if (role === 'B') {
     document.getElementById('screen-camera-match').classList.remove('hidden');
-    await initCameraMatch();
   } else if (role === 'C') {
     document.getElementById('screen-camera-board').classList.remove('hidden');
-    await initCameraBoard();
   }
 }
 
 function setupUIEventListeners() {
-  // Setup screen button
   const btnCreateMatch = document.getElementById('btn-create-match');
   if (btnCreateMatch) {
     btnCreateMatch.addEventListener('click', () => {
@@ -166,7 +162,12 @@ function setupUIEventListeners() {
       gameState.homeTeam = homeVal;
       gameState.awayTeam = awayVal;
       
+      // Generate random match ID
+      matchId = Math.random().toString(36).substring(2, 8).toUpperCase();
       role = 'A';
+      
+      window.history.replaceState({}, '', `/?match=${matchId}&role=A`);
+      showRoleScreen();
       connectToSignaling();
     });
   }
@@ -182,13 +183,18 @@ function setupUIEventListeners() {
   if (clockInput) {
     clockInput.addEventListener('change', (e) => {
       let val = e.target.value.trim();
-      // Ensure MM:SS format
       if (/^\d{1,2}:\d{2}$/.test(val)) {
         updateGameStateField('clock', val, true);
       } else {
         e.target.value = gameState.clock;
       }
     });
+  }
+  
+  // Avvia button trigger
+  const btnAvvia = document.getElementById('btn-avvia');
+  if (btnAvvia) {
+    btnAvvia.addEventListener('click', avviaPartita);
   }
 }
 
@@ -203,22 +209,11 @@ function connectToSignaling() {
 
   ws.onopen = () => {
     console.log('WebSocket di segnalazione connesso.');
-    
-    if (role === 'A' && !matchId) {
-      // Create a new match
-      ws.send(JSON.stringify({
-        type: 'createMatch',
-        homeTeam: gameState.homeTeam,
-        awayTeam: gameState.awayTeam
-      }));
-    } else {
-      // Join an existing match
-      ws.send(JSON.stringify({
-        type: 'joinMatch',
-        matchId,
-        role
-      }));
-    }
+    ws.send(JSON.stringify({
+      type: 'join',
+      matchId,
+      role
+    }));
   };
 
   ws.onmessage = async (event) => {
@@ -252,10 +247,7 @@ function connectToSignaling() {
   ws.onclose = () => {
     console.log('Connessione WebSocket chiusa.');
     if (role === 'B') {
-      const statusEl = document.getElementById('statusB');
-      if (statusEl) {
-        statusEl.textContent = 'Disconnesso';
-      }
+      document.getElementById('statusB').textContent = 'Disconnesso';
     } else if (role === 'C') {
       const statusEl = document.getElementById('status-ocr-c');
       if (statusEl) {
@@ -274,95 +266,57 @@ function connectToSignaling() {
   };
 }
 
-function updateConnectionStatus(peerRole, connected) {
-  const statusEl = document.getElementById(`status-${peerRole.toLowerCase()}`);
-  if (statusEl) {
-    const isC = peerRole.toUpperCase() === 'C';
-    if (connected) {
-      statusEl.innerText = isC ? 'C: connessa ✓' : 'B: connesso ✓';
-      statusEl.className = 'status-indicator connected';
-    } else {
-      statusEl.innerText = isC ? 'C: in attesa...' : 'B: in attesa...';
-      statusEl.className = 'status-indicator disconnected';
-      
-      if (role === 'A') {
-        document.getElementById('btn-toggle-rec').classList.add('disabled');
-        document.getElementById('btn-toggle-rec').setAttribute('disabled', 'true');
-        
-        if (peerRole === 'B') {
-          if (peerConnectionB) {
-            peerConnectionB.close();
-            peerConnectionB = null;
-          }
-          remoteDescSetB = false;
-          iceQueueB = [];
-          
-          const statusVideoEl = document.getElementById('status-video-received');
-          if (statusVideoEl) {
-            statusVideoEl.innerText = 'In attesa video...';
-            statusVideoEl.className = 'badge badge-neutral';
-          }
-        } else if (peerRole === 'C') {
-          if (peerConnectionC) {
-            peerConnectionC.close();
-            peerConnectionC = null;
-          }
-          remoteDescSetC = false;
-          iceQueueC = [];
-          dataChannelC = null;
-        }
-      }
-    }
-  }
-}
-
 // ==========================================================================
 // Role-Specific Signaling Message Handlers
 // ==========================================================================
 
 async function handleMessageA(msg) {
-  if (msg.type === 'matchCreated') {
-    matchId = msg.matchId;
-    window.history.replaceState({}, '', `/?match=${matchId}&role=A`);
-    showRoleScreen();
-  }
   if (msg.type === 'joined') {
-    // Aggiorna UI stato connessioni B e C
-    const statusEl = document.getElementById('status' + msg.role);
-    if (statusEl) {
-      statusEl.textContent = msg.role + ': connesso ✓';
-    }
+    document.getElementById('status' + msg.role).textContent = msg.role + ': connesso ✓';
+    checkPeersReady();
   }
+  
   if (msg.type === 'peerDisconnected') {
-    const statusEl = document.getElementById('status' + msg.role);
-    if (statusEl) {
-      statusEl.textContent = msg.role + ': in attesa...';
-    }
+    document.getElementById('status' + msg.role).textContent = msg.role + ': in attesa...';
     if (msg.role === 'B') {
-      const statusVideoEl = document.getElementById('statusVideo');
-      if (statusVideoEl) {
-        statusVideoEl.textContent = 'Video B: in attesa...';
-      }
+      document.getElementById('statusVideo').textContent = 'Video B: in attesa...';
     }
+    checkPeersReady();
   }
+
   if (msg.type === 'offer') {
+    if (!pcA) {
+      pcA = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      bindPeerConnectionAEvents();
+    }
     await pcA.setRemoteDescription(new RTCSessionDescription(msg.sdp));
     remoteSetA = true;
-    for (const c of iceQueueA) await pcA.addIceCandidate(new RTCIceCandidate(c));
+    for (const c of iceQueueA) {
+      await pcA.addIceCandidate(new RTCIceCandidate(c));
+    }
     iceQueueA.length = 0;
+    
     const answer = await pcA.createAnswer();
     await pcA.setLocalDescription(answer);
     ws.send(JSON.stringify({
-      type: 'answer', sdp: answer,
-      target: 'B', matchId, role: 'A'
+      type: 'answer',
+      sdp: answer,
+      matchId
     }));
   }
+
   if (msg.type === 'ice') {
-    if (remoteSetA) await pcA.addIceCandidate(new RTCIceCandidate(msg.candidate));
-    else iceQueueA.push(msg.candidate);
+    if (remoteSetA) {
+      await pcA.addIceCandidate(new RTCIceCandidate(msg.candidate));
+    } else {
+      iceQueueA.push(msg.candidate);
+    }
   }
-  if (msg.type === 'signal' && msg.data && msg.data.ocrData) {
-    handleReceivedOcrData(msg.data.ocrData);
+
+  if (msg.type === 'ocrData') {
+    handleReceivedOcrData(msg.data);
   }
 }
 
@@ -376,12 +330,17 @@ async function handleMessageB(msg) {
   if (msg.type === 'answer') {
     await pcB.setRemoteDescription(new RTCSessionDescription(msg.sdp));
     remoteSetB = true;
-    for (const c of iceQueueB) await pcB.addIceCandidate(new RTCIceCandidate(c));
+    for (const c of iceQueueB) {
+      await pcB.addIceCandidate(new RTCIceCandidate(c));
+    }
     iceQueueB.length = 0;
   }
   if (msg.type === 'ice') {
-    if (remoteSetB) await pcB.addIceCandidate(new RTCIceCandidate(msg.candidate));
-    else iceQueueB.push(msg.candidate);
+    if (remoteSetB) {
+      await pcB.addIceCandidate(new RTCIceCandidate(msg.candidate));
+    } else {
+      iceQueueB.push(msg.candidate);
+    }
   }
 }
 
@@ -392,31 +351,66 @@ async function handleMessageC(msg) {
   }
 }
 
+function checkPeersReady() {
+  const btnAvvia = document.getElementById('btn-avvia');
+  if (!btnAvvia) return;
+  
+  const statusBText = document.getElementById('statusB').textContent;
+  const statusCText = document.getElementById('statusC').textContent;
+  
+  const isBConnected = statusBText.includes('connesso');
+  const isCConnected = statusCText.includes('connesso');
+  
+  if (isBConnected && isCConnected) {
+    btnAvvia.classList.remove('disabled');
+    btnAvvia.removeAttribute('disabled');
+  } else {
+    btnAvvia.classList.add('disabled');
+    btnAvvia.setAttribute('disabled', 'true');
+  }
+}
+
 // ==========================================================================
 // Role A: WebRTC Connection Receiver
 // ==========================================================================
 
 async function avviaPartita() {
-  ws.send(JSON.stringify({ type: 'start', target: 'B', matchId }));
+  ws.send(JSON.stringify({ type: 'start', matchId }));
 
   pcA = new RTCPeerConnection({
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   });
 
+  bindPeerConnectionAEvents();
+}
+
+function bindPeerConnectionAEvents() {
   pcA.onicecandidate = (e) => {
     if (e.candidate) {
       ws.send(JSON.stringify({
-        type: 'ice', candidate: e.candidate,
-        target: 'B', matchId, role: 'A'
+        type: 'ice',
+        candidate: e.candidate,
+        target: 'B',
+        matchId
       }));
     }
   };
 
+  pcA.oniceconnectionstatechange = () => {
+    console.log('ICE Connection State A:', pcA.iceConnectionState);
+    const debugEl = document.getElementById('debug');
+    if (debugEl) {
+      debugEl.textContent = 'ICE: ' + pcA.iceConnectionState;
+    }
+  };
+
   pcA.ontrack = (event) => {
+    console.log('Track ricevuto da B:', event.streams);
     const videoFromB = document.getElementById('videoFromB');
     videoFromB.srcObject = event.streams[0];
     videoFromB.play().catch(e => console.error('Play error on videoFromB:', e));
     document.getElementById('statusVideo').textContent = '● Video B ricevuto';
+    
     const statusVideoEl = document.getElementById('status-video-received');
     if (statusVideoEl) {
       statusVideoEl.innerText = 'Video ricevuto ✓';
@@ -431,7 +425,7 @@ async function avviaPartita() {
   };
 }
 
-// Make avviaPartita globally accessible for onclick events
+// Make globally accessible
 window.avviaPartita = avviaPartita;
 
 // ==========================================================================
@@ -439,13 +433,14 @@ window.avviaPartita = avviaPartita;
 // ==========================================================================
 
 async function initB() {
+  canvasEl = document.getElementById('preview');
+  ctxEl = canvasEl.getContext('2d');
+
   cameraStream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'environment',
-             width: { ideal: 1920 }, height: { ideal: 1080 } },
+    video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
     audio: true
   }).catch(err => {
-    document.getElementById('statusB').textContent =
-      'Errore fotocamera: ' + err.message;
+    document.getElementById('statusB').textContent = 'Errore fotocamera: ' + err.message;
     throw err;
   });
 
@@ -456,36 +451,32 @@ async function initB() {
   videoEl.muted = true;
   await videoEl.play();
 
-  canvasEl = document.getElementById('previewB');
-  ctxEl = canvasEl.getContext('2d');
-
   // Adatta canvas alle dimensioni video
   videoEl.addEventListener('loadedmetadata', () => {
     canvasEl.width = videoEl.videoWidth;
     canvasEl.height = videoEl.videoHeight;
-    drawLoop();
   });
-
-  // Fallback in case loadedmetadata already fired
   if (videoEl.videoWidth) {
     canvasEl.width = videoEl.videoWidth;
     canvasEl.height = videoEl.videoHeight;
-    drawLoop();
   }
 
-  document.getElementById('statusB').textContent = 'Fotocamera attiva. In attesa di avvio...';
-}
+  // Draw loop with digital zoom
+  function drawLoop() {
+    if (videoEl && videoEl.readyState >= 2) {
+      const vw = videoEl.videoWidth;
+      const vh = videoEl.videoHeight;
+      const cropW = vw / zoomLevel;
+      const cropH = vh / zoomLevel;
+      const cropX = (vw - cropW) / 2;
+      const cropY = (vh - cropH) / 2;
+      ctxEl.drawImage(videoEl, cropX, cropY, cropW, cropH, 0, 0, canvasEl.width, canvasEl.height);
+    }
+    requestAnimationFrame(drawLoop);
+  }
+  drawLoop();
 
-function drawLoop() {
-  const vw = videoEl.videoWidth;
-  const vh = videoEl.videoHeight;
-  const cropW = vw / zoomLevel;
-  const cropH = vh / zoomLevel;
-  const cropX = (vw - cropW) / 2;
-  const cropY = (vh - cropH) / 2;
-  ctxEl.drawImage(videoEl, cropX, cropY, cropW, cropH,
-                  0, 0, canvasEl.width, canvasEl.height);
-  requestAnimationFrame(drawLoop);
+  document.getElementById('statusB').textContent = 'Fotocamera attiva. In attesa di avvio...';
 }
 
 async function startWebRTC() {
@@ -493,30 +484,35 @@ async function startWebRTC() {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   });
 
-  // Aggiungi video dal canvas + audio dalla camera
+  // Capture stream from B's canvas
   const canvasStream = canvasEl.captureStream(30);
   const audioTrack = cameraStream.getAudioTracks()[0];
-  if (audioTrack) canvasStream.addTrack(audioTrack);
+  if (audioTrack) {
+    canvasStream.addTrack(audioTrack);
+  }
   canvasStream.getTracks().forEach(t => pcB.addTrack(t, canvasStream));
 
   pcB.onicecandidate = (e) => {
     if (e.candidate) {
       ws.send(JSON.stringify({
-        type: 'ice', candidate: e.candidate,
-        target: 'A', matchId, role: 'B'
+        type: 'ice',
+        candidate: e.candidate,
+        target: 'A',
+        matchId
       }));
     }
   };
 
   pcB.oniceconnectionstatechange = () => {
-    document.getElementById('statusB').textContent =
-      'ICE: ' + pcB.iceConnectionState;
+    document.getElementById('statusB').textContent = 'ICE: ' + pcB.iceConnectionState;
   };
 
   const offer = await pcB.createOffer();
   await pcB.setLocalDescription(offer);
   ws.send(JSON.stringify({
-    type: 'offer', sdp: offer, matchId, role: 'B'
+    type: 'offer',
+    sdp: offer,
+    matchId
   }));
 }
 
@@ -528,47 +524,60 @@ async function initCameraBoard() {
   console.log('initCameraBoard: Inizializzazione fotocamera e OCR su C...');
   try {
     const videoPreview = document.getElementById('video-preview-c');
-    const canvasCalib = document.getElementById('canvas-calibration');
+    canvasCalib = document.getElementById('canvas-calibration');
+    ctxCalib = canvasCalib.getContext('2d');
+
+    // Load saved calibration points from LocalStorage
+    const savedPoints = localStorage.getItem('courtcast_calib_points');
+    if (savedPoints) {
+      try {
+        calibPoints = JSON.parse(savedPoints);
+        console.log('Calibrazione caricata da LocalStorage.');
+      } catch (e) {
+        console.warn('Errore lettura calibrazione salvata.');
+      }
+    }
+
+    // Bind UI calibration selectors
+    const selectRoi = document.getElementById('select-roi');
+    selectRoi.addEventListener('change', (e) => {
+      currentRoiField = e.target.value;
+    });
+
+    document.getElementById('btn-clear-roi').onclick = () => {
+      calibPoints[currentRoiField] = [];
+      saveCalibration();
+      drawCalibrationLayer();
+    };
+
+    const slider = document.getElementById('slider-threshold');
+    slider.oninput = (e) => {
+      const val = parseInt(e.target.value, 10);
+      document.getElementById('val-threshold-slider').innerText = val === 0 ? 'Auto' : val;
+    };
+
+    // Tap corners listener
+    canvasCalib.addEventListener('click', handleCalibrationTap);
 
     cameraStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
       audio: false
+    }).catch(err => {
+      handleCameraError(err, 'C');
+      throw err;
     });
+    
     videoPreview.srcObject = cameraStream;
     
     videoPreview.onloadedmetadata = () => {
       canvasCalib.width = videoPreview.videoWidth;
       canvasCalib.height = videoPreview.videoHeight;
+      startPreviewLoopC();
       loadOpenCvDynamically();
     };
-
-    // start preview render loop
-    startPreviewLoopC();
   } catch (err) {
     handleCameraError(err, 'C');
   }
-}
-
-// Camera Error Helper
-function handleCameraError(err, roleLabel) {
-  console.error(`Errore fotocamera su ${roleLabel}:`, err);
-  let msg = `Impossibile accedere alla fotocamera: ${err.message}`;
-  if (err.name === 'NotAllowedError') {
-    msg = "Permesso fotocamera negato. Consenti l'accesso alla fotocamera.";
-  } else if (err.name === 'NotFoundError') {
-    msg = "Nessuna fotocamera trovata.";
-  }
-  
-  const errorEl = document.getElementById(roleLabel === 'B' ? 'statusB' : 'status-ocr-c');
-  if (errorEl) {
-    if (roleLabel === 'B') {
-      errorEl.textContent = "Errore Camera";
-    } else {
-      errorEl.innerText = "Errore Camera";
-      errorEl.className = "badge badge-error";
-    }
-  }
-  alert(msg);
 }
 
 // C's Zoom Rendering Loop (Standard Preview when OpenCV isn't running)
@@ -616,6 +625,28 @@ function initCleanCanvasC(w, h) {
   }
 }
 
+// Camera Error Helper
+function handleCameraError(err, roleLabel) {
+  console.error(`Errore fotocamera su ${roleLabel}:`, err);
+  let msg = `Impossibile accedere alla fotocamera: ${err.message}`;
+  if (err.name === 'NotAllowedError') {
+    msg = "Permesso fotocamera negato. Consenti l'accesso alla fotocamera.";
+  } else if (err.name === 'NotFoundError') {
+    msg = "Nessuna fotocamera trovata.";
+  }
+  
+  const errorEl = document.getElementById(roleLabel === 'B' ? 'statusB' : 'status-ocr-c');
+  if (errorEl) {
+    if (roleLabel === 'B') {
+      errorEl.textContent = "Errore Camera";
+    } else {
+      errorEl.innerText = "Errore Camera";
+      errorEl.className = "badge badge-error";
+    }
+  }
+  alert(msg);
+}
+
 // Setup zoom button event listeners
 function setupZoomEventListeners() {
   // B's zoom controls
@@ -651,17 +682,6 @@ function setupZoomEventListeners() {
   }
 }
 
-// Send manual correction event back to C via DataChannel
-function sendManualCorrectionToC(field, value) {
-  if (role === 'A' && dataChannelC && dataChannelC.readyState === 'open') {
-    dataChannelC.send(JSON.stringify({
-      type: 'manualCorrection',
-      field,
-      value
-    }));
-  }
-}
-
 // ==========================================================================
 // Role A: Control Center & Compositing Canvas
 // ==========================================================================
@@ -671,8 +691,6 @@ let broadcastRunning = false;
 
 function initDirector() {
   document.getElementById('display-match-id').innerText = matchId;
-  updateConnectionStatus('B', false);
-  updateConnectionStatus('C', false);
   
   // Create QR codes dynamically using window.location.origin
   const base = window.location.origin;
@@ -728,20 +746,18 @@ function drawBroadcastLoop() {
     ctxA.fillText('In attesa della telecamera (B)...', canvasA.width / 2, canvasA.height / 2);
   }
 
-  // 2. Draw Premium TV Scoreboard Overlay
+  // 2. Draw TV Scoreboard Overlay
   drawScoreboardOverlay(ctxA, canvasA.width, canvasA.height);
 
   requestAnimationFrame(drawBroadcastLoop);
 }
 
 function drawScoreboardOverlay(ctx, w, h) {
-  // Scoreboard size and positioning
   const overlayW = 600;
   const overlayH = 65;
   const x = (w - overlayW) / 2;
-  const y = h - overlayH - 40; // 40px padding from bottom
+  const y = h - overlayH - 40; 
 
-  // 1. Draw main glass container background
   ctx.save();
   ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
   ctx.shadowBlur = 15;
@@ -753,14 +769,12 @@ function drawScoreboardOverlay(ctx, w, h) {
   ctx.fill();
   ctx.restore();
 
-  // Subtle border
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // 2. Draw Sections
   // Home block (Left)
-  ctx.fillStyle = '#3b82f6'; // Bright Neon Blue
+  ctx.fillStyle = '#3b82f6'; 
   ctx.beginPath();
   ctx.roundRect(x + 5, y + 5, 140, overlayH - 10, 6);
   ctx.fill();
@@ -779,7 +793,6 @@ function drawScoreboardOverlay(ctx, w, h) {
   ctx.textAlign = 'center';
   ctx.fillText(gameState.homeScore, x + 180, y + 43);
 
-  // Middle Block (Clock & Quarter)
   // Divider
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
   ctx.lineWidth = 1;
@@ -789,7 +802,7 @@ function drawScoreboardOverlay(ctx, w, h) {
   ctx.stroke();
 
   // Game clock
-  ctx.fillStyle = '#f59e0b'; // Amber LED glow
+  ctx.fillStyle = '#f59e0b'; // Amber LED
   ctx.font = 'bold 30px monospace';
   ctx.textAlign = 'center';
   ctx.fillText(gameState.clock, x + 300, y + 42);
@@ -815,7 +828,7 @@ function drawScoreboardOverlay(ctx, w, h) {
   ctx.fillText(gameState.awayScore, x + 420, y + 43);
 
   // Away block (Right)
-  ctx.fillStyle = '#ef4444'; // Bright Crimson Red
+  ctx.fillStyle = '#ef4444'; 
   ctx.beginPath();
   ctx.roundRect(x + 455, y + 5, 140, overlayH - 10, 6);
   ctx.fill();
@@ -825,7 +838,7 @@ function drawScoreboardOverlay(ctx, w, h) {
   ctx.textAlign = 'center';
   ctx.fillText(gameState.awayTeam, x + 525, y + 37);
 
-  // 3. Draw Fouls Bar Below (subtle secondary panel)
+  // Draw Fouls Bar Below
   const foulsY = y + overlayH + 4;
   ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
   ctx.beginPath();
@@ -837,11 +850,9 @@ function drawScoreboardOverlay(ctx, w, h) {
   ctx.fillStyle = '#94a3b8';
   ctx.font = '600 11px Inter, sans-serif';
   
-  // Home Fouls left aligned
   ctx.textAlign = 'left';
   ctx.fillText(`FALLI: ${gameState.homeFouls}`, x + 65, foulsY + 16);
 
-  // Away Fouls right aligned
   ctx.textAlign = 'right';
   ctx.fillText(`FALLI: ${gameState.awayFouls}`, x + overlayW - 65, foulsY + 16);
 
@@ -852,14 +863,12 @@ function drawScoreboardOverlay(ctx, w, h) {
 function updateGameStateField(field, val, isManual = false) {
   gameState[field] = val;
   
-  // Refresh UI
   if (field === 'homeScore') {
     document.getElementById('val-home-score').innerText = val;
     if (isManual) {
       manualOverride.homeScore = true;
       ocrMatchCount.homeScore = 0;
       document.getElementById('badge-home-manual').classList.remove('hidden');
-      sendManualCorrectionToC('homeScore', val);
     }
   } else if (field === 'awayScore') {
     document.getElementById('val-away-score').innerText = val;
@@ -867,7 +876,6 @@ function updateGameStateField(field, val, isManual = false) {
       manualOverride.awayScore = true;
       ocrMatchCount.awayScore = 0;
       document.getElementById('badge-away-manual').classList.remove('hidden');
-      sendManualCorrectionToC('awayScore', val);
     }
   } else if (field === 'clock') {
     document.getElementById('val-clock').value = val;
@@ -875,7 +883,6 @@ function updateGameStateField(field, val, isManual = false) {
       manualOverride.clock = true;
       ocrMatchCount.clock = 0;
       document.getElementById('badge-clock-manual').classList.remove('hidden');
-      sendManualCorrectionToC('clock', val);
     }
   } else if (field === 'quarter') {
     document.getElementById('val-quarter').innerText = val;
@@ -883,21 +890,18 @@ function updateGameStateField(field, val, isManual = false) {
       manualOverride.quarter = true;
       ocrMatchCount.quarter = 0;
       document.getElementById('badge-quarter-manual').classList.remove('hidden');
-      sendManualCorrectionToC('quarter', val);
     }
   } else if (field === 'homeFouls') {
     document.getElementById('val-home-fouls').innerText = val;
     if (isManual) {
       manualOverride.homeFouls = true;
       ocrMatchCount.homeFouls = 0;
-      sendManualCorrectionToC('homeFouls', val);
     }
   } else if (field === 'awayFouls') {
     document.getElementById('val-away-fouls').innerText = val;
     if (isManual) {
       manualOverride.awayFouls = true;
       ocrMatchCount.awayFouls = 0;
-      sendManualCorrectionToC('awayFouls', val);
     }
   }
 }
@@ -949,15 +953,13 @@ function toggleClockManual() {
       }
       
       let newClock = `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
-      updateGameStateField('clock', newClock, false); // Don't flag as manual override
+      updateGameStateField('clock', newClock, false);
     }, 1000);
   }
 }
 
 // Handle data payload received from OCR Device C
 function handleReceivedOcrData(data) {
-  // Sync each field using re-anchoring logic
-  
   // 1. Home Score
   if (manualOverride.homeScore) {
     if (data.homeScore === gameState.homeScore) {
@@ -970,7 +972,6 @@ function handleReceivedOcrData(data) {
       ocrMatchCount.homeScore = 0;
     }
   } else {
-    // Strict incremental validation
     let diff = data.homeScore - gameState.homeScore;
     if (diff >= 0 && diff <= 3) {
       updateGameStateField('homeScore', data.homeScore, false);
@@ -1025,18 +1026,17 @@ function handleReceivedOcrData(data) {
       ocrMatchCount.clock = 0;
     }
   } else {
-    // Validate chrono decrement
     let curSecs = clockToSeconds(gameState.clock);
     let newSecs = clockToSeconds(data.clock);
     let diff = curSecs - newSecs;
-    if (diff >= 0 && diff <= 3) {
+    if ((diff >= 0 && diff <= 3) || newSecs === 600 || newSecs === 0) {
       updateGameStateField('clock', data.clock, false);
     }
   }
 
   // 5. Fouls
   if (!manualOverride.homeFouls) {
-    if (data.homeFouls >= gameState.homeFouls || data.homeFouls === 0) { // allows reset on new period
+    if (data.homeFouls >= gameState.homeFouls || data.homeFouls === 0) {
       updateGameStateField('homeFouls', data.homeFouls, false);
     }
   } else if (data.homeFouls === gameState.homeFouls) {
@@ -1068,7 +1068,6 @@ let recordStartTime = 0;
 let recordTimerInterval = null;
 let recordFileHandle = null;
 
-// Inline Worker Code to run in a background thread for thread-safe writing to OPFS
 const opfsWorkerCode = `
   let fileHandle = null;
   let accessHandle = null;
@@ -1080,7 +1079,6 @@ const opfsWorkerCode = `
     if (type === 'init') {
       try {
         fileHandle = handle;
-        // Open the high performance access handle
         accessHandle = await fileHandle.createAccessHandle();
         offset = 0;
         self.postMessage({ type: 'ready' });
@@ -1113,7 +1111,6 @@ async function toggleRecording() {
   const btn = document.getElementById('btn-toggle-rec');
   
   if (recording) {
-    // STOP RECORDING
     recording = false;
     document.getElementById('screen-director').classList.remove('recording');
     btn.innerText = 'Preparo video...';
@@ -1124,9 +1121,7 @@ async function toggleRecording() {
       mediaRecorder.stop();
     }
   } else {
-    // START RECORDING
     try {
-      // 1. Screen Wake Lock request (Safari 16.4+)
       if ('wakeLock' in navigator) {
         try {
           wakeLockSentinel = await navigator.wakeLock.request('screen');
@@ -1136,11 +1131,9 @@ async function toggleRecording() {
         }
       }
 
-      // 2. Prepare file on OPFS
       const root = await navigator.storage.getDirectory();
       recordFileHandle = await root.getFileHandle('partita.mp4', { create: true });
       
-      // Init Web Worker
       const blob = new Blob([opfsWorkerCode], { type: 'application/javascript' });
       const workerUrl = URL.createObjectURL(blob);
       opfsWorker = new Worker(workerUrl);
@@ -1151,11 +1144,9 @@ async function toggleRecording() {
         if (e.data.type === 'error') {
           console.error('OPFS Worker Error:', e.data.error);
         } else if (e.data.type === 'ready') {
-          console.log('OPFS Worker pronto per la scrittura.');
           startStreamCapture();
         }
       };
-
     } catch (err) {
       console.error('Inizializzazione registrazione fallita:', err);
       alert('Impossibile iniziare la registrazione su disco: ' + err.message);
@@ -1164,26 +1155,22 @@ async function toggleRecording() {
 }
 
 function startStreamCapture() {
-  const canvasStream = canvasA.captureStream(30); // 30 FPS
-  
-  // Determine suitable video format for Safari/iOS
+  const canvasStream = canvasA.captureStream(30); 
   let mimeType = 'video/mp4';
   if (!MediaRecorder.isTypeSupported(mimeType)) {
-    mimeType = ''; // Let Safari fall back to its internal defaults
+    mimeType = ''; 
   }
   
   mediaRecorder = new MediaRecorder(canvasStream, { mimeType });
   
   mediaRecorder.ondataavailable = async (event) => {
     if (event.data && event.data.size > 0 && opfsWorker) {
-      // Send the blob as ArrayBuffer to the worker for synchronous local disk writing
       const buffer = await event.data.arrayBuffer();
       opfsWorker.postMessage({ type: 'write', chunk: buffer }, [buffer]);
     }
   };
   
   mediaRecorder.onstop = async () => {
-    // Close worker stream
     if (opfsWorker) {
       opfsWorker.postMessage({ type: 'close' });
       opfsWorker.onmessage = async (e) => {
@@ -1195,7 +1182,6 @@ function startStreamCapture() {
       };
     }
     
-    // Release Wake Lock
     if (wakeLockSentinel) {
       await wakeLockSentinel.release();
       wakeLockSentinel = null;
@@ -1204,9 +1190,8 @@ function startStreamCapture() {
     clearInterval(recordTimerInterval);
   };
   
-  mediaRecorder.start(1000); // 1-second timeslices
+  mediaRecorder.start(1000); 
   
-  // UI Update
   recording = true;
   document.getElementById('screen-director').classList.add('recording');
   const btn = document.getElementById('btn-toggle-rec');
@@ -1214,7 +1199,6 @@ function startStreamCapture() {
   btn.classList.remove('disabled');
   btn.removeAttribute('disabled');
   
-  // Start timer
   recordStartTime = Date.now();
   recordTimerInterval = setInterval(updateRecordTimer, 1000);
 }
@@ -1232,7 +1216,6 @@ function updateRecordTimer() {
 async function finalizeFileExport() {
   const file = await recordFileHandle.getFile();
   
-  // Setup share button
   const btnShare = document.getElementById('btn-share-video');
   btnShare.classList.remove('hidden');
   btnShare.onclick = async () => {
@@ -1251,7 +1234,6 @@ async function finalizeFileExport() {
     }
   };
 
-  // Setup download button
   const btnDownload = document.getElementById('btn-download-video');
   btnDownload.classList.remove('hidden');
   btnDownload.onclick = () => {
@@ -1270,136 +1252,12 @@ async function finalizeFileExport() {
 }
 
 // ==========================================================================
-// Role B: Game Camera Streamer Placeholder (initB runs immediately on load)
+// OpenCV.js Image Processing & 7-Segment OCR Loop (runs on C)
 // ==========================================================================
-async function initCameraMatch() {
-  console.log('initCameraMatch: Dispositivo B pronto.');
-}
+let ocrRunning = false;
+let cap = null;
+let srcFrame = null;
 
-// ==========================================================================
-// Role C: Scoreboard OCR Camera (OpenCV.js logic)
-// ==========================================================================
-let canvasCalib = null;
-let ctxCalib = null;
-let currentRoiField = 'homeScore';
-let calibPoints = {
-  homeScore: [],
-  awayScore: [],
-  clock: [],
-  quarter: [],
-  homeFouls: [],
-  awayFouls: []
-};
-
-// Colors associated with each ROI calibration
-const roiColors = {
-  homeScore: '#3b82f6',
-  awayScore: '#ef4444',
-  clock: '#f59e0b',
-  quarter: '#a855f7',
-  homeFouls: '#10b981',
-  awayFouls: '#ec4899'
-};
-
-const ocrHistory = {
-  homeScore: [],
-  awayScore: [],
-  clock: [],
-  quarter: [],
-  homeFouls: [],
-  awayFouls: []
-};
-
-// Current calibrated value limits to filter OCR anomalies
-const lastValidOcr = {
-  homeScore: 0,
-  awayScore: 0,
-  clock: '10:00',
-  quarter: 1,
-  homeFouls: 0,
-  awayFouls: 0
-};
-
-// Synchronize manual correction from A back to C to update our validation anchor
-function syncManualCorrectionToOCR(field, value) {
-  lastValidOcr[field] = value;
-  console.log(`OCR C re-ancorato al valore manuale di A: ${field} = ${value}`);
-}
-
-async function initCameraBoard() {
-  canvasCalib = document.getElementById('canvas-calibration');
-  ctxCalib = canvasCalib.getContext('2d');
-
-  // Load saved calibration points from LocalStorage
-  const savedPoints = localStorage.getItem('courtcast_calib_points');
-  if (savedPoints) {
-    try {
-      calibPoints = JSON.parse(savedPoints);
-      console.log('Calibrazione caricata da LocalStorage.');
-    } catch (e) {
-      console.warn('Errore lettura calibrazione salvata.');
-    }
-  }
-
-  // Bind selector change
-  const selectRoi = document.getElementById('select-roi');
-  selectRoi.addEventListener('change', (e) => {
-    currentRoiField = e.target.value;
-  });
-
-  // Clear button
-  document.getElementById('btn-clear-roi').onclick = () => {
-    calibPoints[currentRoiField] = [];
-    saveCalibration();
-    drawCalibrationLayer();
-  };
-
-  // Slider change
-  const slider = document.getElementById('slider-threshold');
-  slider.oninput = (e) => {
-    const val = parseInt(e.target.value, 10);
-    document.getElementById('val-threshold-slider').innerText = val === 0 ? 'Auto' : val;
-  };
-
-  // Tap corners listener
-  canvasCalib.addEventListener('click', handleCalibrationTap);
-
-  // Initialize camera immediately
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: 'environment', // rear camera
-        width: { ideal: 1920 },    // high resolution to capture scoreboard details
-        height: { ideal: 1080 }
-      },
-      audio: false
-    });
-
-    const videoPreview = document.getElementById('video-preview-c');
-    videoPreview.srcObject = localStream;
-    
-    // Start preview and setup signaling once video metadata is active
-    videoPreview.onloadedmetadata = () => {
-      canvasCalib.width = videoPreview.videoWidth;
-      canvasCalib.height = videoPreview.videoHeight;
-      
-      // Start camera preview rendering loop immediately (including digital zoom)
-      startPreviewLoopC();
-      
-      loadOpenCvDynamically();
-      
-      // If websocket already joined, setup peer connection
-      if (ws && ws.readyState === WebSocket.OPEN && peerConnectionMatch === null) {
-        setupWebRTCPeerC();
-      }
-    };
-  } catch (err) {
-    console.error('Camera access failed on C:', err);
-    alert('Impossibile accedere alla fotocamera su C: ' + err.message);
-  }
-}
-
-// Dynamically load OpenCV.js with status and error handling on C
 function loadOpenCvDynamically() {
   const statusBadge = document.getElementById('status-opencv');
   
@@ -1410,7 +1268,7 @@ function loadOpenCvDynamically() {
     return;
   }
   
-  statusBadge.innerText = 'Caricamento OpenCV... (potrebbe richiedere qualche secondo)';
+  statusBadge.innerText = 'Caricamento OpenCV...';
   statusBadge.className = 'badge badge-neutral';
 
   let script = document.getElementById('opencv-script');
@@ -1423,7 +1281,7 @@ function loadOpenCvDynamically() {
       console.error('Errore caricamento OpenCV.js');
       statusBadge.innerText = 'Errore OpenCV';
       statusBadge.className = 'badge badge-error';
-      mostraErrore('OpenCV non trovato. Riavvia il server con npm run dev.');
+      alert('OpenCV non trovato. Riavvia il server.');
     };
     
     script.onload = () => {
@@ -1448,17 +1306,6 @@ function waitForCvReady() {
   }
 }
 
-function mostraErrore(messaggio) {
-  alert(messaggio);
-  const banner = document.getElementById('offline-banner');
-  if (banner) {
-    banner.innerText = messaggio;
-    banner.className = "banner badge-error";
-    banner.classList.remove('hidden');
-  }
-}
-
-// Handle tap to set the 4 vertices of a ROI
 function handleCalibrationTap(e) {
   const rect = canvasCalib.getBoundingClientRect();
   const scaleX = canvasCalib.width / rect.width;
@@ -1479,30 +1326,23 @@ function saveCalibration() {
   localStorage.setItem('courtcast_calib_points', JSON.stringify(calibPoints));
 }
 
-// Draw calibration boxes & points on preview
 function drawCalibrationLayer() {
-  // Overlays are drawn on top of the already drawn video frame, so we don't clear the context.
-
-  // Draw current frames for each ROI
   for (const [field, points] of Object.entries(calibPoints)) {
     const isCurrent = field === currentRoiField;
     ctxCalib.fillStyle = roiColors[field];
     ctxCalib.strokeStyle = roiColors[field];
     ctxCalib.lineWidth = isCurrent ? 5 : 2;
 
-    // Draw points
     points.forEach((p, idx) => {
       ctxCalib.beginPath();
       ctxCalib.arc(p.x, p.y, isCurrent ? 8 : 4, 0, 2 * Math.PI);
       ctxCalib.fill();
-      
       ctxCalib.font = '16px Inter, sans-serif';
       ctxCalib.fillStyle = '#fff';
       ctxCalib.fillText(idx + 1, p.x + 10, p.y - 10);
       ctxCalib.fillStyle = roiColors[field];
     });
 
-    // Draw connecting lines
     if (points.length > 0) {
       ctxCalib.beginPath();
       ctxCalib.moveTo(points[0].x, points[0].y);
@@ -1516,13 +1356,6 @@ function drawCalibrationLayer() {
     }
   }
 }
-
-// ==========================================================================
-// OpenCV.js Image Processing & 7-Segment OCR Loop (runs on C)
-// ==========================================================================
-let ocrRunning = false;
-let cap = null;
-let srcFrame = null;
 
 function startOcrLoop() {
   ocrRunning = true;
@@ -1542,28 +1375,23 @@ function ocrProcessFrame() {
       const h = video.videoHeight;
       initCleanCanvasC(w, h);
       
-      // 1. Draw zoomed/cropped video to clean canvas (no overlays)
       const cropW = w / zoomLevelC;
       const cropH = h / zoomLevelC;
       const cropX = (w - cropW) / 2;
       const cropY = (h - cropH) / 2;
       cleanCtxC.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, w, h);
       
-      // 2. Draw zoomed video to the visible canvas-calibration, then draw overlays
       ctxCalib.drawImage(cleanCanvasC, 0, 0, w, h);
       drawCalibrationLayer();
       
-      // 3. Capture frame for OpenCV from the clean canvas!
       cap.read(srcFrame);
       
-      // 4. Process each calibrated field
       for (const [field, points] of Object.entries(calibPoints)) {
         if (points.length === 4) {
           processRoiField(srcFrame, field, points);
         }
       }
       
-      // 5. Send official voted state back to A
       sendOcrStateToDirector();
     }
   } catch (err) {
@@ -1574,13 +1402,11 @@ function ocrProcessFrame() {
 }
 
 function processRoiField(srcMat, field, points) {
-  // Target sizes for warping (depending on expected digit count)
   let targetW = 80;
   let targetH = 60;
   if (field === 'clock') targetW = 160;
   if (field === 'quarter' || field === 'homeFouls' || field === 'awayFouls') targetW = 40;
 
-  // 1. Warp perspective to deskew the ROI
   let srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
     points[0].x, points[0].y,
     points[1].x, points[1].y,
@@ -1601,41 +1427,32 @@ function processRoiField(srcMat, field, points) {
   
   cv.warpPerspective(srcMat, warped, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
 
-  // 2. Preprocessing
   let gray = new cv.Mat();
   cv.cvtColor(warped, gray, cv.COLOR_RGBA2GRAY);
 
-  // Normalization (CLAHE) to suppress camera auto-exposure changes
   let equalized = new cv.Mat();
   try {
     let clahe = new cv.createCLAHE(2.0, new cv.Size(8, 8));
     clahe.apply(gray, equalized);
     clahe.delete();
   } catch (e) {
-    // Fallback if CLAHE fails
     cv.equalizeHist(gray, equalized);
   }
 
-  // 3. Thresholding (Adaptive or Override)
   let thresh = new cv.Mat();
   const sliderVal = parseInt(document.getElementById('slider-threshold').value, 10);
   
   if (sliderVal === 0) {
-    // Otsu automatic thresholding
     cv.threshold(equalized, thresh, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
   } else {
-    // Manual override slider
     cv.threshold(equalized, thresh, sliderVal, 255, cv.THRESH_BINARY);
   }
 
-  // Show the warped and binarized frame in UI canvases
   cv.imshow(`warped-${field}`, warped);
   cv.imshow(`thresh-${field}`, thresh);
 
-  // 4. Perform digit extraction & segment classification
   readDigitsFromThreshold(thresh, field, targetW, targetH);
 
-  // Clean memory
   srcPts.delete();
   dstPts.delete();
   M.delete();
@@ -1645,8 +1462,6 @@ function processRoiField(srcMat, field, points) {
   thresh.delete();
 }
 
-// 7-segment Layout mapping on a standard warped digit block (40x60 width*height)
-// Bounding boxes coordinates relative to a 40x60 container
 const segmentBoxes = [
   { name: 'A', x1: 8,  x2: 32, y1: 4,  y2: 10 },
   { name: 'B', x1: 30, x2: 36, y1: 8,  y2: 26 },
@@ -1657,7 +1472,6 @@ const segmentBoxes = [
   { name: 'G', x1: 8,  x2: 32, y1: 25, y2: 33 }
 ];
 
-// Mapping active segments key 'A B C D E F G' -> digit
 const activePatterns = {
   '1111110': 0,
   '0110000': 1,
@@ -1669,7 +1483,7 @@ const activePatterns = {
   '1110000': 7,
   '1111111': 8,
   '1111011': 9,
-  '0000000': 0 // off/blank is treated as 0
+  '0000000': 0
 };
 
 function readDigitsFromThreshold(threshMat, field, totalW, totalH) {
@@ -1679,17 +1493,14 @@ function readDigitsFromThreshold(threshMat, field, totalW, totalH) {
 
   for (let d = 0; d < numDigits; d++) {
     const xOffset = d * digitWidth;
-    
-    // Check segments A-G in this digit region
     const activeSegments = [];
     segmentBoxes.forEach(box => {
-      // Create sub-region for segment
       const rect = new cv.Rect(xOffset + box.x1, box.y1, (box.x2 - box.x1), (box.y2 - box.y1));
       const subMat = threshMat.roi(rect);
       
       const whiteCount = cv.countNonZero(subMat);
       const totalPixels = subMat.rows * subMat.cols;
-      const isActive = (whiteCount / totalPixels) > 0.30; // 30% segment threshold
+      const isActive = (whiteCount / totalPixels) > 0.30; 
       
       activeSegments.push(isActive);
       subMat.delete();
@@ -1699,16 +1510,14 @@ function readDigitsFromThreshold(threshMat, field, totalW, totalH) {
     if (digit !== null) {
       parsedValueStr += digit.toString();
     } else {
-      parsedValueStr += '0'; // default fallback for unrecognizable segment noise
+      parsedValueStr += '0'; 
     }
   }
 
-  // Push raw reading to history list for multi-frame voting
   let finalVal = parseFieldResult(field, parsedValueStr);
   pushOcrHistory(field, finalVal);
 }
 
-// Hamming distance decoder (matches closest digit with max 1 segment deviation)
 function decodeSegmentPattern(segments) {
   const patternStr = segments.map(s => s ? '1' : '0').join('');
   if (activePatterns[patternStr] !== undefined) {
@@ -1736,7 +1545,6 @@ function decodeSegmentPattern(segments) {
 
 function parseFieldResult(field, rawStr) {
   if (field === 'clock') {
-    // 4 digits -> MM:SS
     return `${rawStr.substring(0, 2)}:${rawStr.substring(2, 4)}`;
   }
   return parseInt(rawStr, 10);
@@ -1749,7 +1557,6 @@ function pushOcrHistory(field, val) {
     list.shift();
   }
 
-  // Multi-frame voting
   if (list.length >= 3) {
     const votes = {};
     let maxCount = 0;
@@ -1763,17 +1570,14 @@ function pushOcrHistory(field, val) {
       }
     });
 
-    // Validate the voted value using sports logic rules
     validateAndPublishOcrValue(field, votedVal);
   }
 }
 
-// Sports Logic Validation and UI Publishing
 function validateAndPublishOcrValue(field, value) {
   let isValid = false;
 
   if (field === 'homeScore' || field === 'awayScore') {
-    // Score validation (can only increase by 0, 1, 2, or 3)
     let prev = lastValidOcr[field];
     let diff = value - prev;
     if (diff >= 0 && diff <= 3) {
@@ -1781,18 +1585,14 @@ function validateAndPublishOcrValue(field, value) {
       isValid = true;
     }
   } else if (field === 'clock') {
-    // Clock validation (must count down, max decrease of 3 secs, allows reset on period end)
     let prevSecs = clockToSeconds(lastValidOcr.clock);
     let newSecs = clockToSeconds(value);
     let diff = prevSecs - newSecs;
-    
-    // Accept if it decreases regularly, stays same, or jumps up (for period start)
     if ((diff >= 0 && diff <= 3) || newSecs === 600 || newSecs === 0) {
       lastValidOcr.clock = value;
       isValid = true;
     }
   } else if (field === 'quarter') {
-    // Quarter validation (only advances by 0 or 1)
     let prev = lastValidOcr.quarter;
     let diff = value - prev;
     if (diff === 0 || diff === 1) {
@@ -1800,7 +1600,6 @@ function validateAndPublishOcrValue(field, value) {
       isValid = true;
     }
   } else if (field === 'homeFouls' || field === 'awayFouls') {
-    // Fouls validation (increases or resets to 0 on new quarter)
     let prev = lastValidOcr[field];
     if (value >= prev || value === 0) {
       lastValidOcr[field] = value;
@@ -1808,15 +1607,13 @@ function validateAndPublishOcrValue(field, value) {
     }
   }
 
-  // Update diagnostic UI text on device C
   const uiEl = document.getElementById(`ocr-val-${field}`);
   if (uiEl) {
     uiEl.innerText = lastValidOcr[field];
-    uiEl.style.color = isValid ? '#f59e0b' : '#ef4444'; // Orange for valid, Red for discarded
+    uiEl.style.color = isValid ? '#f59e0b' : '#ef4444'; 
   }
 }
 
-// Send current state packet to director
 function sendOcrStateToDirector() {
   const dataPacket = {
     homeScore: lastValidOcr.homeScore,
@@ -1827,14 +1624,11 @@ function sendOcrStateToDirector() {
     awayFouls: lastValidOcr.awayFouls
   };
 
-  if (dataChannelC && dataChannelC.readyState === 'open') {
-    dataChannelC.send(JSON.stringify(dataPacket));
-  } else if (ws && ws.readyState === WebSocket.OPEN) {
-    // Fallback via ws if WebRTC DataChannel isn't open yet
+  if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
-      type: 'signal',
-      target: 'A',
-      data: { ocrData: dataPacket }
+      type: 'ocrData',
+      matchId,
+      data: dataPacket
     }));
   }
 }
