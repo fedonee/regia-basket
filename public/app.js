@@ -1293,7 +1293,7 @@ function loadOpenCvDynamically() {
   if (!script) {
     script = document.createElement('script');
     script.id = 'opencv-script';
-    script.src = '/libs/opencv.js';
+    script.src = 'libs/opencv.js';
     
     script.onerror = () => {
       console.error('Errore caricamento OpenCV.js');
