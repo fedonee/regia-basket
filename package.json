@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node download-opencv.js && node server.js",
-    "build": "node download-opencv.js"
+    "build": "npm install"
   },
   "dependencies": {
     "express": "^4.19.2",

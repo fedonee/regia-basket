@@ -1290,7 +1290,7 @@ function loadOpenCvDynamically() {
   const statusBadge = document.getElementById('status-opencv');
   
   if (typeof cv !== 'undefined' && cv.Mat) {
-    statusBadge.innerText = 'Pronto';
+    statusBadge.innerText = 'OpenCV pronto ✓';
     statusBadge.className = 'badge badge-primary';
     startOcrLoop();
     return;
@@ -1299,6 +1299,11 @@ function loadOpenCvDynamically() {
   statusBadge.innerText = 'Caricamento OpenCV...';
   statusBadge.className = 'badge badge-neutral';
 
+  const timeout = setTimeout(() => {
+    statusBadge.innerText = 'Timeout: opencv.js impiega troppo a caricare.';
+    statusBadge.className = 'badge badge-error';
+  }, 15000);
+
   let script = document.getElementById('opencv-script');
   if (!script) {
     script = document.createElement('script');
@@ -1306,31 +1311,31 @@ function loadOpenCvDynamically() {
     script.src = 'libs/opencv.js';
     
     script.onerror = () => {
-      console.error('Errore caricamento OpenCV.js');
-      statusBadge.innerText = 'Errore OpenCV';
+      clearTimeout(timeout);
+      statusBadge.innerText = 'Errore: opencv.js non trovato sul server.';
       statusBadge.className = 'badge badge-error';
-      alert('OpenCV non trovato. Riavvia il server.');
     };
     
     script.onload = () => {
       console.log('OpenCV.js caricato, in attesa del runtime...');
-      waitForCvReady();
+      waitForCvReady(timeout);
     };
     
     document.head.appendChild(script);
   } else {
-    waitForCvReady();
+    waitForCvReady(timeout);
   }
 }
 
-function waitForCvReady() {
+function waitForCvReady(timeout) {
   const statusBadge = document.getElementById('status-opencv');
   if (typeof cv !== 'undefined' && cv.Mat) {
-    statusBadge.innerText = 'Pronto';
+    clearTimeout(timeout);
+    statusBadge.innerText = 'OpenCV pronto ✓';
     statusBadge.className = 'badge badge-primary';
     startOcrLoop();
   } else {
-    setTimeout(waitForCvReady, 200);
+    setTimeout(() => waitForCvReady(timeout), 200);
   }
 }
 
