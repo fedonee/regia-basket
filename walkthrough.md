@@ -1,69 +1,49 @@
-# Walkthrough — CourtCast Broadcast System MVP
+# Walkthrough — CourtCast Broadcast System Clean Rewrite
 
-Abbiamo completato con successo lo sviluppo dell'applicazione di regia per partite di basket (SPA) distribuita su tre dispositivi locali (A, B, C).
-
-Il sistema è completamente implementato, testato localmente, offline-resilient ed ottimizzato specificamente per i vincoli di iOS Safari.
+We have completed the clean rewrite of the WebRTC signaling routing, Device B's camera preview and zoom canvas loop, and the local development OpenCV caching check.
 
 ---
 
-## Architettura e Flusso Dati
+## Architectural Changes & Updates
 
-L'infrastruttura si basa su un **Signaling Server locale/cloud** e connessioni **WebRTC peer-to-peer dirette** stabilite tramite l'hotspot del Dispositivo A:
+### 1. Clean WebSocket Server Routing (`server.js`)
+- **Simplified Matches Map**: Built a clear plain object registry `matches` containing `{ A: ws, B: ws, C: ws, metadata: {} }` mapped to each `matchId`.
+- **Targeted Message Routing**: Implemented a clean `sendTo(matchId, targetRole, message)` routing function.
+- **Explicit Signal Handlers**: Added WebSocket routing cases for:
+  - `offer` (B/C -> A)
+  - `answer` (A -> B/C target)
+  - `ice` (anyone -> target)
+  - `joined` (server -> A notification)
+  - `start` (A -> B signaling)
+  - `signal` (generic signals and OCR score packet transmission C -> A)
 
-```mermaid
-graph TD
-    A[Dispositivo A - Regia/Hotspot] <-->|Handshake WebSocket| S[Server di Segnalazione]
-    B[Dispositivo B - Camera Partita] <-->|Handshake WebSocket| S
-    C[Dispositivo C - Camera Tabellone] <-->|Handshake WebSocket| S
-    
-    B ===|Stream Video WebRTC| A
-    C ===|RTCDataChannel / WebSocket Fallback| A
-```
+### 2. Device B Camera Preview & Zoom Rewrite (`public/index.html` & `public/app.js`)
+- **Direct Canvas Preview**: Replaced the nested Video & Canvas combo on B's screen with a single `<canvas id="previewB"></canvas>`.
+- **Immediate getUserMedia**: Started B's camera session immediately upon page load to give instantaneous feedback, rather than waiting for WebSocket joins.
+- **On-Demand WebRTC**: Configured B to start WebRTC offering and streaming *only* when A sends the `'start'` command message.
+- **Local Zoom Controls**: Built large touch-friendly button controls directly inside B's screen card to adjust `zoomLevel` central cropping.
 
----
+### 3. Device A WebRTC Receiver & Connection Handshake
+- **Avvia Trigger Button**: Added a dedicated "Avvia" button (`#btn-avvia`) in Director A's composite broadcast header.
+- **A Handshake Initiation**: Clicking "Avvia" dispatches a `start` command to B, setting up A's `pcA` and preparing to receive B's video stream.
+- **Modular Message Delegates**: Split the legacy monolithic `ws.onmessage` switch block in `app.js` into three clean, role-specific message handlers: `handleMessageA`, `handleMessageB`, and `handleMessageC`.
 
-## Dettagli Tecnici Implementati
-
-### 1. Registrazione Video Ultra-Stabile su iOS (OPFS)
-Per evitare i limiti di memoria e i crash tipici di Safari durante lunghe sessioni di registrazione, abbiamo implementato la scrittura incrementale tramite **Origin Private File System (OPFS)**:
-- **Timeslice di 1 secondo:** `MediaRecorder` genera spezzoni in continuo senza sovraccaricare la RAM del browser.
-- **Worker Ausiliario Inline:** I chunk binari vengono trasferiti ad un Web Worker che esegue la scrittura sincrona non bloccante sul thread principale con `createSyncAccessHandle`.
-- **Esportazione Nativa:** Al termine, il file MP4 viene chiuso ed esportato tramite la **Web Share API** (per salvare in Rullino Foto o inviare via AirDrop) o link di download diretto.
-- **Screen Wake Lock:** Blocco automatico dello stand-by dello schermo per impedire la sospensione di Safari in background.
-
-### 2. OCR locale a 7 segmenti su C (OpenCV.js)
-La pipeline di visione artificiale gira interamente sul dispositivo C:
-- **Calibrazione ROI Interattiva:** L'operatore seleziona il campo desiderato e tocca i 4 angoli sul canvas. I punti vengono salvati in `LocalStorage`.
-- **Pre-elaborazione delle ROI:** Applicazione di prospettiva raddrizzata (`warpPerspective`), normalizzazione dei contrasti tramite equalizzazione dell'istogramma/CLAHE, e binarizzazione adattiva con soglia Otsu auto-regolante.
-- **Riconoscimento Segmenti e Distanza di Hamming:** Rilevazione dello stato dei 7 segmenti LED e correzione d'errore a maggioranza per gestire rumori d'immagine (accetta fino a 1 deviazione di segmento).
-- **Votazione Multi-frame e Regole Fisiche:** Votazione a maggioranza su 5 frame. Il punteggio può solo salire di 1, 2 o 3 punti; il cronometro può solo decrescere.
-
-### 3. Sincronizzazione e Re-ancoraggio Manuale
-Quando il regista su A corregge manualmente un punteggio, un fallo o il tempo:
-- Il nuovo valore diventa il riferimento ufficiale ed A invia la correzione a C tramite il DataChannel WebRTC.
-- C aggiorna istantaneamente la sua ancora di validazione sul nuovo valore manuale per evitare che letture OCR successive sovrascrivano la correzione (re-ancoraggio).
-- La modalità manuale si disattiva automaticamente non appena l'OCR su C produce 5 frame coerenti con il nuovo valore.
+### 4. OpenCV Local Caching Check (`download-opencv.js`)
+- **File Exist Check**: Added an early exit check using `fs.existsSync('./public/libs/opencv.js')` to bypass redundant downloads during local development, cutting startup delays.
 
 ---
 
-## Registrazione della Verifica Setup
+## List of Modified Files
 
-Di seguito è mostrata l'animazione della configurazione iniziale, creazione della partita, caricamento dell'overlay e generazione dinamica dei QR code per i dispositivi B e C:
-
-![Configurazione e Generazione QR Code A](C:\Users\utente\.gemini\antigravity\brain\52bf550c-8c3a-4ace-b1b1-3e30ca17313e\courtcast_origin_qr_flow_1780761816703.webp)
+- [server.js](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-ab5c0e0df099/Nuova%20cartella%20%282%29/server.js) — Streamlined room mapping and message routing.
+- [download-opencv.js](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-ab5c0e0df099/Nuova%20cartella%20%282%29/download-opencv.js) — Caching validation check.
+- [public/index.html](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-ab5c0e0df099/Nuova%20cartella%20%282%29/public/index.html) — Device B structure, A status monitors, and buttons.
+- [public/style.css](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-ab5c0e0df099/Nuova%20cartella%20%282%29/public/style.css) — Custom styling for B preview canvas and controls.
+- [public/app.js](file:///c:/Users/utente/.gemini/antigravity/brain/bf070a5a-08b4-4419-8b8c-app.js) — B immediate camera init, A click trigger, modular WS handlers, and zoom controls.
 
 ---
 
-## Elenco File Creati
+## Verification & Status
 
-- [package.json](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/package.json) — Gestione dipendenze e script.
-- [server.js](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/server.js) — Server HTTP statico e segnalazione WebSocket.
-- [download-opencv.js](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/download-opencv.js) — Script di download offline delle librerie esterne.
-- [public/index.html](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/public/index.html) — Interfaccia utente unificata (SPA) per tutti i ruoli.
-- [public/style.css](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/public/style.css) — Styling CSS responsive e premium.
-- [public/app.js](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/public/app.js) — Logica client-side (WebRTC, OPFS, OpenCV.js OCR, manual overrides).
-- [public/sw.js](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/public/sw.js) — Service worker per l'esecuzione in caching offline.
-- [.gitignore](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/.gitignore) — File di esclusione tracciamento Git.
-- [render.yaml](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/render.yaml) — File di configurazione Infrastructure as Code per Render.
-- [DEPLOY.md](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/DEPLOY.md) — Manuale di installazione e deploy per l'utente.
-- [setup.ps1](file:///C:/Users/utente/.gemini/antigravity/brain/52bf550c-8c3a-4ace-b1b1-3e30ca17313e/setup.ps1) — Script PowerShell interattivo per la configurazione di Git e il push.
+- **Syntax Validation**: Checked `server.js` compile check successfully.
+- **Git Status**: Files are copied to workspace, ready to commit and push.

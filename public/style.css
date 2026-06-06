@@ -564,11 +564,10 @@ h2 {
   border: 1px solid var(--border-color);
 }
 
-#video-preview-b {
+#video-preview-b, #canvas-preview-b {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform: scaleX(-1); /* mirror preview */
 }
 
 .instruction {
@@ -740,3 +739,92 @@ h2 {
 .hidden-video-a {
   display: none;
 }
+
+/* Zoom Controls Style */
+.zoom-container {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--bg-card);
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  font-family: var(--font-title);
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin: 10px auto;
+}
+
+.btn-mini {
+  padding: 4px 12px;
+  width: 32px;
+  height: 32px;
+  font-size: 1.1rem;
+  background-color: var(--color-primary);
+  color: #fff;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-weight: bold;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.btn-mini:hover {
+  background-color: #2563eb;
+  transform: scale(1.05);
+}
+
+/* Custom Device B Styles */
+#previewB {
+  width: 100%;
+  aspect-ratio: 16/9;
+  background-color: #000;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  display: block;
+  margin: 0 auto 15px auto;
+  object-fit: contain;
+}
+
+#zoom-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 15px;
+}
+
+#zoom-controls button {
+  width: 50px;
+  height: 50px;
+  font-size: 1.6rem;
+  font-weight: bold;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+#zoom-controls button:hover {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+#statusB {
+  font-size: 1rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-top: 10px;
+  text-align: center;
+}
+

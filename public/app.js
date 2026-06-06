@@ -13,32 +13,28 @@ let role = roleParam || 'A';
 let ws = null;
 let localStream = null;
 
-// Director connections (Role A)
-let peerConnectionB = null;
-let addIceB = null;
-let setRemoteB = null;
+// Role A (Director) WebRTC Connection to B
+let pcA;
+const iceQueueA = [];
+let remoteSetA = false;
 
+// Role C connections (Data Channel & Legacy WebRTC)
 let peerConnectionC = null;
 let addIceC = null;
 let setRemoteC = null;
+let dataChannelC = null;
 
-// Client connection (Role B or C)
-let peerConnectionMatch = null;
-let addIceMatch = null;
-let setRemoteMatch = null;
-
-let dataChannelC = null; // WebRTC Data Channel for OCR (C -> A)
-
-// Global zoom level and B's camera elements
+// Role B (Camera) Preview & WebRTC state
 let zoomLevel = 1.0;
+let zoomLevelC = 1.0;
 let cameraStream = null;
-const videoB = document.createElement('video');
-videoB.autoplay = true;
-videoB.playsInline = true;
-const canvasB = document.createElement('canvas');
-canvasB.width = 1280;
-canvasB.height = 720;
-const ctxB = canvasB.getContext('2d');
+let videoEl = null;
+let canvasEl = null;
+let ctxEl = null;
+let pcB = null;
+const iceQueueB = [];
+let remoteSetB = false;
+let peerConnectionMatch = null;
 
 // Game State (Official state on A, synced to C)
 const gameState = {
@@ -120,6 +116,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (matchId && (role === 'B' || role === 'C')) {
     // If role and match are in URL, auto-connect as client
     connectToSignaling();
+  }
+
+  if (role === 'B') {
+    initB().catch(e => console.error("initB error:", e));
   }
 });
 
@@ -226,87 +226,23 @@ function connectToSignaling() {
       const message = JSON.parse(event.data);
       console.log('WebSocket ricevuto:', message.type);
 
-      switch (message.type) {
-        case 'matchCreated':
-          matchId = message.matchId;
-          // Set URL query params silently
-          window.history.replaceState({}, '', `/?match=${matchId}&role=A`);
-          showRoleScreen();
-          break;
+      if (message.type === 'matchClosed') {
+        alert('La partita è stata chiusa dal regista.');
+        window.location.href = '/';
+        return;
+      }
+      if (message.type === 'error') {
+        alert('Errore: ' + message.message);
+        window.location.href = '/';
+        return;
+      }
 
-        case 'joined':
-          gameState.homeTeam = message.metadata.homeTeam;
-          gameState.awayTeam = message.metadata.awayTeam;
-          console.log(`Unito con successo alla partita ${matchId} come ${role}`);
-          if (role === 'B') {
-            document.getElementById('status-camera-b').innerText = 'Connesso';
-            document.getElementById('status-camera-b').className = 'badge badge-primary';
-            initCameraB().catch(e => console.error("initCameraB error:", e));
-          } else if (role === 'C') {
-            document.getElementById('status-ocr-c').innerText = 'Connesso';
-            document.getElementById('status-ocr-c').className = 'badge badge-primary';
-            initCameraC().catch(e => console.error("initCameraC error:", e));
-          }
-          break;
-
-        case 'peerConnected':
-          updateConnectionStatus(message.role, true);
-          break;
-
-        case 'peerDisconnected':
-          updateConnectionStatus(message.role, false);
-          break;
-
-        case 'readyToStart':
-          document.getElementById('btn-toggle-rec').classList.remove('disabled');
-          document.getElementById('btn-toggle-rec').removeAttribute('disabled');
-          break;
-
-        case 'offer':
-          if (role === 'A') {
-            if (message.from === 'B') {
-              handleOfferFromB(message.sdp).catch(e => console.error('Error handling offer from B:', e));
-            } else if (message.from === 'C') {
-              handleOfferFromC(message.sdp).catch(e => console.error('Error handling offer from C:', e));
-            }
-          }
-          break;
-
-        case 'answer':
-          if (role === 'B' && window.setRemoteB) {
-            window.setRemoteB(message.sdp).catch(e => console.error('Error setting remote B:', e));
-          } else if (role === 'C' && window.setRemoteC) {
-            window.setRemoteC(message.sdp).catch(e => console.error('Error setting remote C:', e));
-          }
-          break;
-
-        case 'ice':
-          if (role === 'A') {
-            if (message.from === 'B' && typeof addIceA === 'function') {
-              addIceA(message.candidate).catch(e => console.error('Error adding ICE candidate to A from B:', e));
-            } else if (message.from === 'C' && typeof addIceC === 'function') {
-              addIceC(message.candidate).catch(e => console.error('Error adding ICE candidate to A from C:', e));
-            }
-          } else if (role === 'B' && window.addIceB) {
-            window.addIceB(message.candidate).catch(e => console.error('Error adding ICE candidate to B:', e));
-          } else if (role === 'C' && window.addIceC) {
-            window.addIceC(message.candidate).catch(e => console.error('Error adding ICE candidate to C:', e));
-          }
-          break;
-
-        case 'signal':
-          // Relayed legacy signal
-          break;
-
-        case 'matchClosed':
-          alert('La partita è stata chiusa dal regista.');
-          window.location.href = '/';
-          break;
-
-        case 'error':
-          alert('Errore: ' + message.message);
-          window.location.href = '/';
-          break;
+      if (role === 'A') {
+        await handleMessageA(message);
+      } else if (role === 'B') {
+        await handleMessageB(message);
+      } else if (role === 'C') {
+        await handleMessageC(message);
       }
     } catch (err) {
       console.error('Errore gestione messaggio WebSocket:', err);
@@ -316,10 +252,9 @@ function connectToSignaling() {
   ws.onclose = () => {
     console.log('Connessione WebSocket chiusa.');
     if (role === 'B') {
-      const statusEl = document.getElementById('status-camera-b');
+      const statusEl = document.getElementById('statusB');
       if (statusEl) {
-        statusEl.innerText = 'Disconnesso';
-        statusEl.className = 'badge badge-error';
+        statusEl.textContent = 'Disconnesso';
       }
     } else if (role === 'C') {
       const statusEl = document.getElementById('status-ocr-c');
@@ -328,9 +263,13 @@ function connectToSignaling() {
         statusEl.className = 'badge badge-error';
       }
     }
-    if (peerConnectionMatch) {
-      peerConnectionMatch.close();
-      peerConnectionMatch = null;
+    if (pcB) {
+      pcB.close();
+      pcB = null;
+    }
+    if (pcA) {
+      pcA.close();
+      pcA = null;
     }
   };
 }
@@ -378,112 +317,213 @@ function updateConnectionStatus(peerRole, connected) {
 }
 
 // ==========================================================================
-// WebRTC Connections (B -> A Video, C -> A Data)
+// Role-Specific Signaling Message Handlers
 // ==========================================================================
 
-const ICE_CONFIG = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-};
-
-// Coda ICE — impedisce addIceCandidate prima di setRemoteDescription
-function createPeerConnection(onTrack, peerRole) {
-  const pc = new RTCPeerConnection(ICE_CONFIG);
-  const iceQueue = [];
-  let remoteSet = false;
-
-  pc.onicecandidate = (e) => {
-    if (e.candidate) {
-      const msg = { type: 'ice', candidate: e.candidate };
-      if (role === 'A' && peerRole) {
-        msg.target = peerRole;
+async function handleMessageA(msg) {
+  if (msg.type === 'matchCreated') {
+    matchId = msg.matchId;
+    window.history.replaceState({}, '', `/?match=${matchId}&role=A`);
+    showRoleScreen();
+  }
+  if (msg.type === 'joined') {
+    // Aggiorna UI stato connessioni B e C
+    const statusEl = document.getElementById('status' + msg.role);
+    if (statusEl) {
+      statusEl.textContent = msg.role + ': connesso ✓';
+    }
+  }
+  if (msg.type === 'peerDisconnected') {
+    const statusEl = document.getElementById('status' + msg.role);
+    if (statusEl) {
+      statusEl.textContent = msg.role + ': in attesa...';
+    }
+    if (msg.role === 'B') {
+      const statusVideoEl = document.getElementById('statusVideo');
+      if (statusVideoEl) {
+        statusVideoEl.textContent = 'Video B: in attesa...';
       }
-      ws.send(JSON.stringify(msg));
-    }
-  };
-
-  pc.oniceconnectionstatechange = () => {
-    console.log('ICE Connection State:', pc.iceConnectionState);
-    const debugEl = document.getElementById('debug');
-    if (debugEl) {
-      debugEl.textContent = 'ICE: ' + pc.iceConnectionState;
-    }
-  };
-
-  if (onTrack) pc.ontrack = onTrack;
-
-  async function addIce(candidate) {
-    if (remoteSet) {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    } else {
-      iceQueue.push(candidate);
     }
   }
-
-  async function setRemote(sdp) {
-    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-    remoteSet = true;
-    for (const c of iceQueue) {
-      await pc.addIceCandidate(new RTCIceCandidate(c));
-    }
-    iceQueue.length = 0;
+  if (msg.type === 'offer') {
+    await pcA.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    remoteSetA = true;
+    for (const c of iceQueueA) await pcA.addIceCandidate(new RTCIceCandidate(c));
+    iceQueueA.length = 0;
+    const answer = await pcA.createAnswer();
+    await pcA.setLocalDescription(answer);
+    ws.send(JSON.stringify({
+      type: 'answer', sdp: answer,
+      target: 'B', matchId, role: 'A'
+    }));
   }
-
-  return { pc, addIce, setRemote };
-}
-
-// ─── RUOLO B ──────────────────────────────────────────────────────
-async function initCameraMatch() {
-  console.log('initCameraMatch: Inizializzazione fotocamera su B...');
-  try {
-    const videoB = document.getElementById('video-preview-b');
-    const canvasB = document.getElementById('canvas-preview-b');
-    canvasB.width = 1280;
-    canvasB.height = 720;
-    const ctxB = canvasB.getContext('2d');
-
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: true
-    });
-    videoB.srcObject = cameraStream;
-    await videoB.play();
-
-    // Loop canvas con zoom applicato
-    function drawFrame() {
-      const vw = videoB.videoWidth;
-      const vh = videoB.videoHeight;
-      const cropW = vw / zoomLevel;
-      const cropH = vh / zoomLevel;
-      const cropX = (vw - cropW) / 2;
-      const cropY = (vh - cropH) / 2;
-      ctxB.clearRect(0, 0, canvasB.width, canvasB.height);
-      ctxB.drawImage(videoB, cropX, cropY, cropW, cropH, 0, 0, canvasB.width, canvasB.height);
-      requestAnimationFrame(drawFrame);
-    }
-    drawFrame();
-
-    // Avvia WebRTC con il canvas stream (non il raw camera stream)
-    const canvasStream = canvasB.captureStream(30);
-    const { pc, addIce, setRemote } = createPeerConnection(null, 'B');
-
-    canvasStream.getTracks().forEach(track => pc.addTrack(track, canvasStream));
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    ws.send(JSON.stringify({ type: 'offer', sdp: offer, role: 'B' }));
-
-    // Salva riferimenti per gestire answer e ICE in arrivo
-    window.pcB = pc;
-    window.addIceB = addIce;
-    window.setRemoteB = setRemote;
-    
-    peerConnectionMatch = pc;
-  } catch (err) {
-    handleCameraError(err, 'B');
+  if (msg.type === 'ice') {
+    if (remoteSetA) await pcA.addIceCandidate(new RTCIceCandidate(msg.candidate));
+    else iceQueueA.push(msg.candidate);
+  }
+  if (msg.type === 'signal' && msg.data && msg.data.ocrData) {
+    handleReceivedOcrData(msg.data.ocrData);
   }
 }
 
-// ─── RUOLO C ──────────────────────────────────────────────────────
+async function handleMessageB(msg) {
+  if (msg.type === 'joined') {
+    document.getElementById('statusB').textContent = 'Connesso. In attesa di avvio...';
+  }
+  if (msg.type === 'start') {
+    await startWebRTC();
+  }
+  if (msg.type === 'answer') {
+    await pcB.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    remoteSetB = true;
+    for (const c of iceQueueB) await pcB.addIceCandidate(new RTCIceCandidate(c));
+    iceQueueB.length = 0;
+  }
+  if (msg.type === 'ice') {
+    if (remoteSetB) await pcB.addIceCandidate(new RTCIceCandidate(msg.candidate));
+    else iceQueueB.push(msg.candidate);
+  }
+}
+
+async function handleMessageC(msg) {
+  if (msg.type === 'joined') {
+    document.getElementById('status-ocr-c').innerText = 'Connesso';
+    document.getElementById('status-ocr-c').className = 'badge badge-primary';
+  }
+}
+
+// ==========================================================================
+// Role A: WebRTC Connection Receiver
+// ==========================================================================
+
+async function avviaPartita() {
+  ws.send(JSON.stringify({ type: 'start', target: 'B', matchId }));
+
+  pcA = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+
+  pcA.onicecandidate = (e) => {
+    if (e.candidate) {
+      ws.send(JSON.stringify({
+        type: 'ice', candidate: e.candidate,
+        target: 'B', matchId, role: 'A'
+      }));
+    }
+  };
+
+  pcA.ontrack = (event) => {
+    const videoFromB = document.getElementById('videoFromB');
+    videoFromB.srcObject = event.streams[0];
+    videoFromB.play().catch(e => console.error('Play error on videoFromB:', e));
+    document.getElementById('statusVideo').textContent = '● Video B ricevuto';
+    const statusVideoEl = document.getElementById('status-video-received');
+    if (statusVideoEl) {
+      statusVideoEl.innerText = 'Video ricevuto ✓';
+      statusVideoEl.className = 'badge badge-primary';
+    }
+    // Enable recording trigger
+    const btnToggleRec = document.getElementById('btn-toggle-rec');
+    if (btnToggleRec) {
+      btnToggleRec.classList.remove('disabled');
+      btnToggleRec.removeAttribute('disabled');
+    }
+  };
+}
+
+// Make avviaPartita globally accessible for onclick events
+window.avviaPartita = avviaPartita;
+
+// ==========================================================================
+// Role B: Local Camera Preview, Canvas, & WebRTC Streamer
+// ==========================================================================
+
+async function initB() {
+  cameraStream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: 'environment',
+             width: { ideal: 1920 }, height: { ideal: 1080 } },
+    audio: true
+  }).catch(err => {
+    document.getElementById('statusB').textContent =
+      'Errore fotocamera: ' + err.message;
+    throw err;
+  });
+
+  videoEl = document.createElement('video');
+  videoEl.srcObject = cameraStream;
+  videoEl.autoplay = true;
+  videoEl.playsInline = true;
+  videoEl.muted = true;
+  await videoEl.play();
+
+  canvasEl = document.getElementById('previewB');
+  ctxEl = canvasEl.getContext('2d');
+
+  // Adatta canvas alle dimensioni video
+  videoEl.addEventListener('loadedmetadata', () => {
+    canvasEl.width = videoEl.videoWidth;
+    canvasEl.height = videoEl.videoHeight;
+    drawLoop();
+  });
+
+  // Fallback in case loadedmetadata already fired
+  if (videoEl.videoWidth) {
+    canvasEl.width = videoEl.videoWidth;
+    canvasEl.height = videoEl.videoHeight;
+    drawLoop();
+  }
+
+  document.getElementById('statusB').textContent = 'Fotocamera attiva. In attesa di avvio...';
+}
+
+function drawLoop() {
+  const vw = videoEl.videoWidth;
+  const vh = videoEl.videoHeight;
+  const cropW = vw / zoomLevel;
+  const cropH = vh / zoomLevel;
+  const cropX = (vw - cropW) / 2;
+  const cropY = (vh - cropH) / 2;
+  ctxEl.drawImage(videoEl, cropX, cropY, cropW, cropH,
+                  0, 0, canvasEl.width, canvasEl.height);
+  requestAnimationFrame(drawLoop);
+}
+
+async function startWebRTC() {
+  pcB = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+
+  // Aggiungi video dal canvas + audio dalla camera
+  const canvasStream = canvasEl.captureStream(30);
+  const audioTrack = cameraStream.getAudioTracks()[0];
+  if (audioTrack) canvasStream.addTrack(audioTrack);
+  canvasStream.getTracks().forEach(t => pcB.addTrack(t, canvasStream));
+
+  pcB.onicecandidate = (e) => {
+    if (e.candidate) {
+      ws.send(JSON.stringify({
+        type: 'ice', candidate: e.candidate,
+        target: 'A', matchId, role: 'B'
+      }));
+    }
+  };
+
+  pcB.oniceconnectionstatechange = () => {
+    document.getElementById('statusB').textContent =
+      'ICE: ' + pcB.iceConnectionState;
+  };
+
+  const offer = await pcB.createOffer();
+  await pcB.setLocalDescription(offer);
+  ws.send(JSON.stringify({
+    type: 'offer', sdp: offer, matchId, role: 'B'
+  }));
+}
+
+// ==========================================================================
+// Role C: Scoreboard OCR Camera Setup
+// ==========================================================================
+
 async function initCameraBoard() {
   console.log('initCameraBoard: Inizializzazione fotocamera e OCR su C...');
   try {
@@ -504,103 +544,9 @@ async function initCameraBoard() {
 
     // start preview render loop
     startPreviewLoopC();
-
-    const { pc, addIce, setRemote } = createPeerConnection(null, 'C');
-
-    // Create direct data channel
-    dataChannelC = pc.createDataChannel('ocr-data', { ordered: true });
-    
-    dataChannelC.onopen = () => {
-      console.log('WebRTC Data Channel aperto su C.');
-      document.getElementById('status-ocr-c').innerText = 'Connesso';
-      document.getElementById('status-ocr-c').className = 'badge badge-primary';
-    };
-    
-    dataChannelC.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'manualCorrection') {
-          syncManualCorrectionToOCR(msg.field, msg.value);
-        }
-      } catch (err) {
-        console.error('Errore lettura dati WebRTC su C:', err);
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    ws.send(JSON.stringify({ type: 'offer', sdp: offer, role: 'C' }));
-
-    window.pcC = pc;
-    window.addIceC = addIce;
-    window.setRemoteC = setRemote;
-
-    peerConnectionMatch = pc;
   } catch (err) {
     handleCameraError(err, 'C');
   }
-}
-
-// ─── RUOLO A (ricezione video da B e dati da C) ──────────────────
-async function handleOfferFromB(offerSdp) {
-  console.log('handleOfferFromB: Ricevuta offer da B');
-  const videoFromB = document.getElementById('videoFromB');
-  videoFromB.autoplay = true;
-  videoFromB.playsInline = true;
-  videoFromB.muted = true;
-
-  const { pc, addIce, setRemote } = createPeerConnection(
-    (event) => {
-      console.log('Track ricevuto da B:', event.streams);
-      videoFromB.srcObject = event.streams[0];
-      videoFromB.play().catch(e => console.error('Play error:', e));
-      document.getElementById('statusB').textContent = 'Video B: ✓ ricevuto';
-      const statusVideoEl = document.getElementById('status-video-received');
-      if (statusVideoEl) {
-        statusVideoEl.innerText = 'Video ricevuto ✓';
-        statusVideoEl.className = 'badge badge-primary';
-      }
-    },
-    'B'
-  );
-
-  peerConnectionB = pc;
-  addIceB = addIce;
-  setRemoteB = setRemote;
-
-  await setRemote(offerSdp);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  ws.send(JSON.stringify({ type: 'answer', sdp: answer, target: 'B' }));
-}
-
-async function handleOfferFromC(offerSdp) {
-  console.log('handleOfferFromC: Ricevuta offer da C');
-  const { pc, addIce, setRemote } = createPeerConnection(
-    null,
-    'C'
-  );
-
-  pc.ondatachannel = (event) => {
-    console.log('Ricevuto DataChannel da C');
-    const channel = event.channel;
-    channel.onopen = () => {
-      document.getElementById('statusC').textContent = 'Dati C: ✓ ricevuto';
-    };
-    channel.onmessage = (e) => {
-      handleReceivedOcrData(JSON.parse(e.data));
-    };
-    dataChannelC = channel;
-  };
-
-  peerConnectionC = pc;
-  addIceC = addIce;
-  setRemoteC = setRemote;
-
-  await setRemote(offerSdp);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  ws.send(JSON.stringify({ type: 'answer', sdp: answer, target: 'C' }));
 }
 
 // Camera Error Helper
@@ -608,15 +554,19 @@ function handleCameraError(err, roleLabel) {
   console.error(`Errore fotocamera su ${roleLabel}:`, err);
   let msg = `Impossibile accedere alla fotocamera: ${err.message}`;
   if (err.name === 'NotAllowedError') {
-    msg = "Permesso fotocamera negato. Vai in Impostazioni Safari e consenti l'accesso alla fotocamera.";
+    msg = "Permesso fotocamera negato. Consenti l'accesso alla fotocamera.";
   } else if (err.name === 'NotFoundError') {
     msg = "Nessuna fotocamera trovata.";
   }
   
-  const errorEl = document.getElementById(roleLabel === 'B' ? 'status-camera-b' : 'status-ocr-c');
+  const errorEl = document.getElementById(roleLabel === 'B' ? 'statusB' : 'status-ocr-c');
   if (errorEl) {
-    errorEl.innerText = "Errore Camera";
-    errorEl.className = "badge badge-error";
+    if (roleLabel === 'B') {
+      errorEl.textContent = "Errore Camera";
+    } else {
+      errorEl.innerText = "Errore Camera";
+      errorEl.className = "badge badge-error";
+    }
   }
   alert(msg);
 }
@@ -638,8 +588,8 @@ function previewLoopC() {
     const h = video.videoHeight;
     initCleanCanvasC(w, h);
     
-    const cropW = w / zoomLevel;
-    const cropH = h / zoomLevel;
+    const cropW = w / zoomLevelC;
+    const cropH = h / zoomLevelC;
     const cropX = (w - cropW) / 2;
     const cropY = (h - cropH) / 2;
     cleanCtxC.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, w, h);
@@ -668,6 +618,7 @@ function initCleanCanvasC(w, h) {
 
 // Setup zoom button event listeners
 function setupZoomEventListeners() {
+  // B's zoom controls
   const zoomInBtn = document.getElementById('zoomIn');
   const zoomOutBtn = document.getElementById('zoomOut');
   const zoomLabel = document.getElementById('zoomLabel');
@@ -680,6 +631,22 @@ function setupZoomEventListeners() {
     zoomOutBtn.onclick = () => {
       zoomLevel = Math.max(1.0, parseFloat((zoomLevel - 0.5).toFixed(1)));
       zoomLabel.textContent = zoomLevel + 'x';
+    };
+  }
+
+  // C's zoom controls
+  const zoomInBtnC = document.getElementById('btn-zoom-in-c');
+  const zoomOutBtnC = document.getElementById('btn-zoom-out-c');
+  const zoomLabelC = document.getElementById('label-zoom-c');
+
+  if (zoomInBtnC && zoomOutBtnC && zoomLabelC) {
+    zoomInBtnC.onclick = () => {
+      zoomLevelC = Math.min(3.0, parseFloat((zoomLevelC + 0.5).toFixed(1)));
+      zoomLabelC.textContent = zoomLevelC + 'x';
+    };
+    zoomOutBtnC.onclick = () => {
+      zoomLevelC = Math.max(1.0, parseFloat((zoomLevelC - 0.5).toFixed(1)));
+      zoomLabelC.textContent = zoomLevelC + 'x';
     };
   }
 }
@@ -1303,37 +1270,10 @@ async function finalizeFileExport() {
 }
 
 // ==========================================================================
-// Role B: Game Camera Streamer
+// Role B: Game Camera Streamer Placeholder (initB runs immediately on load)
 // ==========================================================================
 async function initCameraMatch() {
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: 'environment', // Rear camera
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: true
-    });
-    
-    const videoPreview = document.getElementById('video-preview-b');
-    videoPreview.srcObject = localStream;
-    
-    videoPreview.onloadedmetadata = () => {
-      const canvasB = document.getElementById('canvas-preview-b');
-      canvasB.width = videoPreview.videoWidth;
-      canvasB.height = videoPreview.videoHeight;
-      
-      startZoomLoopB();
-      
-      // If websocket already joined, setup peer connection
-      if (ws && ws.readyState === WebSocket.OPEN && peerConnectionMatch === null) {
-        setupWebRTCPeerB();
-      }
-    };
-  } catch (err) {
-    handleCameraError(err, 'B');
-  }
+  console.log('initCameraMatch: Dispositivo B pronto.');
 }
 
 // ==========================================================================
