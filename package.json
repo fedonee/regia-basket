@@ -7,7 +7,7 @@
     "download-libs": "node download-opencv.js",
     "build": "node download-opencv.js",
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node download-opencv.js && node server.js"
   },
   "dependencies": {
     "express": "^4.19.2",

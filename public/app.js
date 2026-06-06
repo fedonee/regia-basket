@@ -12,10 +12,33 @@ let matchId = matchIdParam || null;
 let role = roleParam || 'A';
 let ws = null;
 let localStream = null;
-let peerConnectionB = null; // A's connection with B
-let peerConnectionC = null; // A's connection with C
-let peerConnectionMatch = null; // B or C's connection with A
+
+// Director connections (Role A)
+let peerConnectionB = null;
+let addIceB = null;
+let setRemoteB = null;
+
+let peerConnectionC = null;
+let addIceC = null;
+let setRemoteC = null;
+
+// Client connection (Role B or C)
+let peerConnectionMatch = null;
+let addIceMatch = null;
+let setRemoteMatch = null;
+
 let dataChannelC = null; // WebRTC Data Channel for OCR (C -> A)
+
+// Global zoom level and B's camera elements
+let zoomLevel = 1.0;
+let cameraStream = null;
+const videoB = document.createElement('video');
+videoB.autoplay = true;
+videoB.playsInline = true;
+const canvasB = document.createElement('canvas');
+canvasB.width = 1280;
+canvasB.height = 720;
+const ctxB = canvasB.getContext('2d');
 
 // Game State (Official state on A, synced to C)
 const gameState = {
@@ -79,7 +102,7 @@ window.addEventListener('online', () => {
 });
 
 // App Initialization
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Warn if not running in secure context on non-localhost origins
   if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     const banner = document.getElementById('offline-banner');
@@ -90,8 +113,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  showRoleScreen();
+  await showRoleScreen();
   setupUIEventListeners();
+  setupZoomEventListeners();
   
   if (matchId && (role === 'B' || role === 'C')) {
     // If role and match are in URL, auto-connect as client
@@ -102,12 +126,20 @@ document.addEventListener('DOMContentLoaded', () => {
 // ==========================================================================
 // UI & Screen Routing
 // ==========================================================================
-function showRoleScreen() {
+async function showRoleScreen() {
   // Hide all screens
   document.getElementById('screen-setup').classList.add('hidden');
   document.getElementById('screen-director').classList.add('hidden');
   document.getElementById('screen-camera-match').classList.add('hidden');
   document.getElementById('screen-camera-board').classList.add('hidden');
+
+  // Toggle zoom controls visibility based on the role
+  const zoomControls = document.getElementById('zoom-controls');
+  if (role === 'B' || role === 'C') {
+    if (zoomControls) zoomControls.classList.remove('hidden');
+  } else {
+    if (zoomControls) zoomControls.classList.add('hidden');
+  }
 
   if (!matchId && role === 'A') {
     document.getElementById('screen-setup').classList.remove('hidden');
@@ -116,10 +148,10 @@ function showRoleScreen() {
     initDirector();
   } else if (role === 'B') {
     document.getElementById('screen-camera-match').classList.remove('hidden');
-    initCameraMatch();
+    await initCameraMatch();
   } else if (role === 'C') {
     document.getElementById('screen-camera-board').classList.remove('hidden');
-    initCameraBoard();
+    await initCameraBoard();
   }
 }
 
@@ -209,11 +241,11 @@ function connectToSignaling() {
           if (role === 'B') {
             document.getElementById('status-camera-b').innerText = 'Connesso';
             document.getElementById('status-camera-b').className = 'badge badge-primary';
-            setupWebRTCPeerB();
+            initCameraB().catch(e => console.error("initCameraB error:", e));
           } else if (role === 'C') {
             document.getElementById('status-ocr-c').innerText = 'Connesso';
             document.getElementById('status-ocr-c').className = 'badge badge-primary';
-            setupWebRTCPeerC();
+            initCameraC().catch(e => console.error("initCameraC error:", e));
           }
           break;
 
@@ -230,8 +262,40 @@ function connectToSignaling() {
           document.getElementById('btn-toggle-rec').removeAttribute('disabled');
           break;
 
+        case 'offer':
+          if (role === 'A') {
+            if (message.from === 'B') {
+              handleOfferFromB(message.sdp).catch(e => console.error('Error handling offer from B:', e));
+            } else if (message.from === 'C') {
+              handleOfferFromC(message.sdp).catch(e => console.error('Error handling offer from C:', e));
+            }
+          }
+          break;
+
+        case 'answer':
+          if (role === 'B' && window.setRemoteB) {
+            window.setRemoteB(message.sdp).catch(e => console.error('Error setting remote B:', e));
+          } else if (role === 'C' && window.setRemoteC) {
+            window.setRemoteC(message.sdp).catch(e => console.error('Error setting remote C:', e));
+          }
+          break;
+
+        case 'ice':
+          if (role === 'A') {
+            if (message.from === 'B' && typeof addIceA === 'function') {
+              addIceA(message.candidate).catch(e => console.error('Error adding ICE candidate to A from B:', e));
+            } else if (message.from === 'C' && typeof addIceC === 'function') {
+              addIceC(message.candidate).catch(e => console.error('Error adding ICE candidate to A from C:', e));
+            }
+          } else if (role === 'B' && window.addIceB) {
+            window.addIceB(message.candidate).catch(e => console.error('Error adding ICE candidate to B:', e));
+          } else if (role === 'C' && window.addIceC) {
+            window.addIceC(message.candidate).catch(e => console.error('Error adding ICE candidate to C:', e));
+          }
+          break;
+
         case 'signal':
-          handleSignalingMessage(message.from, message.data);
+          // Relayed legacy signal
           break;
 
         case 'matchClosed':
@@ -251,22 +315,63 @@ function connectToSignaling() {
 
   ws.onclose = () => {
     console.log('Connessione WebSocket chiusa.');
-    // Try to reconnect if signaling was lost, but don't disrupt active local WebRTC flows
+    if (role === 'B') {
+      const statusEl = document.getElementById('status-camera-b');
+      if (statusEl) {
+        statusEl.innerText = 'Disconnesso';
+        statusEl.className = 'badge badge-error';
+      }
+    } else if (role === 'C') {
+      const statusEl = document.getElementById('status-ocr-c');
+      if (statusEl) {
+        statusEl.innerText = 'Disconnesso';
+        statusEl.className = 'badge badge-error';
+      }
+    }
+    if (peerConnectionMatch) {
+      peerConnectionMatch.close();
+      peerConnectionMatch = null;
+    }
   };
 }
 
 function updateConnectionStatus(peerRole, connected) {
   const statusEl = document.getElementById(`status-${peerRole.toLowerCase()}`);
   if (statusEl) {
+    const isC = peerRole.toUpperCase() === 'C';
     if (connected) {
-      statusEl.innerText = 'Connesso';
+      statusEl.innerText = isC ? 'C: connessa ✓' : 'B: connesso ✓';
       statusEl.className = 'status-indicator connected';
     } else {
-      statusEl.innerText = 'Disconnesso';
+      statusEl.innerText = isC ? 'C: in attesa...' : 'B: in attesa...';
       statusEl.className = 'status-indicator disconnected';
+      
       if (role === 'A') {
         document.getElementById('btn-toggle-rec').classList.add('disabled');
         document.getElementById('btn-toggle-rec').setAttribute('disabled', 'true');
+        
+        if (peerRole === 'B') {
+          if (peerConnectionB) {
+            peerConnectionB.close();
+            peerConnectionB = null;
+          }
+          remoteDescSetB = false;
+          iceQueueB = [];
+          
+          const statusVideoEl = document.getElementById('status-video-received');
+          if (statusVideoEl) {
+            statusVideoEl.innerText = 'In attesa video...';
+            statusVideoEl.className = 'badge badge-neutral';
+          }
+        } else if (peerRole === 'C') {
+          if (peerConnectionC) {
+            peerConnectionC.close();
+            peerConnectionC = null;
+          }
+          remoteDescSetC = false;
+          iceQueueC = [];
+          dataChannelC = null;
+        }
       }
     }
   }
@@ -276,51 +381,145 @@ function updateConnectionStatus(peerRole, connected) {
 // WebRTC Connections (B -> A Video, C -> A Data)
 // ==========================================================================
 
-// A Setup connection for B (Video stream from B)
-function setupWebRTCPeerB() {
-  if (role === 'B') {
-    // Camera B initiates connection to A
-    peerConnectionMatch = new RTCPeerConnection(rtcConfig);
-    
-    // Add local camera video tracks
-    if (localStream) {
-      localStream.getTracks().forEach(track => peerConnectionMatch.addTrack(track, localStream));
-    }
+const ICE_CONFIG = {
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+};
 
-    peerConnectionMatch.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendSignal('A', { candidate: event.candidate });
+// Coda ICE — impedisce addIceCandidate prima di setRemoteDescription
+function createPeerConnection(onTrack, peerRole) {
+  const pc = new RTCPeerConnection(ICE_CONFIG);
+  const iceQueue = [];
+  let remoteSet = false;
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      const msg = { type: 'ice', candidate: e.candidate };
+      if (role === 'A' && peerRole) {
+        msg.target = peerRole;
       }
-    };
+      ws.send(JSON.stringify(msg));
+    }
+  };
 
-    // Create SDP Offer
-    peerConnectionMatch.createOffer()
-      .then(offer => peerConnectionMatch.setLocalDescription(offer))
-      .then(() => {
-        sendSignal('A', { sdp: peerConnectionMatch.localDescription });
-      });
+  pc.oniceconnectionstatechange = () => {
+    console.log('ICE Connection State:', pc.iceConnectionState);
+    const debugEl = document.getElementById('debug');
+    if (debugEl) {
+      debugEl.textContent = 'ICE: ' + pc.iceConnectionState;
+    }
+  };
+
+  if (onTrack) pc.ontrack = onTrack;
+
+  async function addIce(candidate) {
+    if (remoteSet) {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } else {
+      iceQueue.push(candidate);
+    }
+  }
+
+  async function setRemote(sdp) {
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    remoteSet = true;
+    for (const c of iceQueue) {
+      await pc.addIceCandidate(new RTCIceCandidate(c));
+    }
+    iceQueue.length = 0;
+  }
+
+  return { pc, addIce, setRemote };
+}
+
+// ─── RUOLO B ──────────────────────────────────────────────────────
+async function initCameraMatch() {
+  console.log('initCameraMatch: Inizializzazione fotocamera su B...');
+  try {
+    const videoB = document.getElementById('video-preview-b');
+    const canvasB = document.getElementById('canvas-preview-b');
+    canvasB.width = 1280;
+    canvasB.height = 720;
+    const ctxB = canvasB.getContext('2d');
+
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: true
+    });
+    videoB.srcObject = cameraStream;
+    await videoB.play();
+
+    // Loop canvas con zoom applicato
+    function drawFrame() {
+      const vw = videoB.videoWidth;
+      const vh = videoB.videoHeight;
+      const cropW = vw / zoomLevel;
+      const cropH = vh / zoomLevel;
+      const cropX = (vw - cropW) / 2;
+      const cropY = (vh - cropH) / 2;
+      ctxB.clearRect(0, 0, canvasB.width, canvasB.height);
+      ctxB.drawImage(videoB, cropX, cropY, cropW, cropH, 0, 0, canvasB.width, canvasB.height);
+      requestAnimationFrame(drawFrame);
+    }
+    drawFrame();
+
+    // Avvia WebRTC con il canvas stream (non il raw camera stream)
+    const canvasStream = canvasB.captureStream(30);
+    const { pc, addIce, setRemote } = createPeerConnection(null, 'B');
+
+    canvasStream.getTracks().forEach(track => pc.addTrack(track, canvasStream));
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: offer, role: 'B' }));
+
+    // Salva riferimenti per gestire answer e ICE in arrivo
+    window.pcB = pc;
+    window.addIceB = addIce;
+    window.setRemoteB = setRemote;
+    
+    peerConnectionMatch = pc;
+  } catch (err) {
+    handleCameraError(err, 'B');
   }
 }
 
-// A Setup connection for C (DataChannel from C)
-function setupWebRTCPeerC() {
-  if (role === 'C') {
-    // Camera C initiates connection to A
-    peerConnectionMatch = new RTCPeerConnection(rtcConfig);
+// ─── RUOLO C ──────────────────────────────────────────────────────
+async function initCameraBoard() {
+  console.log('initCameraBoard: Inizializzazione fotocamera e OCR su C...');
+  try {
+    const videoPreview = document.getElementById('video-preview-c');
+    const canvasCalib = document.getElementById('canvas-calibration');
+
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false
+    });
+    videoPreview.srcObject = cameraStream;
+    
+    videoPreview.onloadedmetadata = () => {
+      canvasCalib.width = videoPreview.videoWidth;
+      canvasCalib.height = videoPreview.videoHeight;
+      loadOpenCvDynamically();
+    };
+
+    // start preview render loop
+    startPreviewLoopC();
+
+    const { pc, addIce, setRemote } = createPeerConnection(null, 'C');
 
     // Create direct data channel
-    dataChannelC = peerConnectionMatch.createDataChannel('ocr-data', { ordered: true });
+    dataChannelC = pc.createDataChannel('ocr-data', { ordered: true });
     
     dataChannelC.onopen = () => {
       console.log('WebRTC Data Channel aperto su C.');
+      document.getElementById('status-ocr-c').innerText = 'Connesso';
+      document.getElementById('status-ocr-c').className = 'badge badge-primary';
     };
     
     dataChannelC.onmessage = (event) => {
-      // C receives messages from A (e.g. manual score sync)
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'manualCorrection') {
-          // Re-anchor OCR reference values
           syncManualCorrectionToOCR(msg.field, msg.value);
         }
       } catch (err) {
@@ -328,97 +527,160 @@ function setupWebRTCPeerC() {
       }
     };
 
-    peerConnectionMatch.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendSignal('A', { candidate: event.candidate });
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: offer, role: 'C' }));
+
+    window.pcC = pc;
+    window.addIceC = addIce;
+    window.setRemoteC = setRemote;
+
+    peerConnectionMatch = pc;
+  } catch (err) {
+    handleCameraError(err, 'C');
+  }
+}
+
+// ─── RUOLO A (ricezione video da B e dati da C) ──────────────────
+async function handleOfferFromB(offerSdp) {
+  console.log('handleOfferFromB: Ricevuta offer da B');
+  const videoFromB = document.getElementById('videoFromB');
+  videoFromB.autoplay = true;
+  videoFromB.playsInline = true;
+  videoFromB.muted = true;
+
+  const { pc, addIce, setRemote } = createPeerConnection(
+    (event) => {
+      console.log('Track ricevuto da B:', event.streams);
+      videoFromB.srcObject = event.streams[0];
+      videoFromB.play().catch(e => console.error('Play error:', e));
+      document.getElementById('statusB').textContent = 'Video B: ✓ ricevuto';
+      const statusVideoEl = document.getElementById('status-video-received');
+      if (statusVideoEl) {
+        statusVideoEl.innerText = 'Video ricevuto ✓';
+        statusVideoEl.className = 'badge badge-primary';
       }
+    },
+    'B'
+  );
+
+  peerConnectionB = pc;
+  addIceB = addIce;
+  setRemoteB = setRemote;
+
+  await setRemote(offerSdp);
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  ws.send(JSON.stringify({ type: 'answer', sdp: answer, target: 'B' }));
+}
+
+async function handleOfferFromC(offerSdp) {
+  console.log('handleOfferFromC: Ricevuta offer da C');
+  const { pc, addIce, setRemote } = createPeerConnection(
+    null,
+    'C'
+  );
+
+  pc.ondatachannel = (event) => {
+    console.log('Ricevuto DataChannel da C');
+    const channel = event.channel;
+    channel.onopen = () => {
+      document.getElementById('statusC').textContent = 'Dati C: ✓ ricevuto';
     };
+    channel.onmessage = (e) => {
+      handleReceivedOcrData(JSON.parse(e.data));
+    };
+    dataChannelC = channel;
+  };
 
-    // Create SDP Offer
-    peerConnectionMatch.createOffer()
-      .then(offer => peerConnectionMatch.setLocalDescription(offer))
-      .then(() => {
-        sendSignal('A', { sdp: peerConnectionMatch.localDescription });
-      });
-  }
+  peerConnectionC = pc;
+  addIceC = addIce;
+  setRemoteC = setRemote;
+
+  await setRemote(offerSdp);
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  ws.send(JSON.stringify({ type: 'answer', sdp: answer, target: 'C' }));
 }
 
-// Generic Signaling Send
-function sendSignal(target, data) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'signal',
-      target,
-      data
-    }));
+// Camera Error Helper
+function handleCameraError(err, roleLabel) {
+  console.error(`Errore fotocamera su ${roleLabel}:`, err);
+  let msg = `Impossibile accedere alla fotocamera: ${err.message}`;
+  if (err.name === 'NotAllowedError') {
+    msg = "Permesso fotocamera negato. Vai in Impostazioni Safari e consenti l'accesso alla fotocamera.";
+  } else if (err.name === 'NotFoundError') {
+    msg = "Nessuna fotocamera trovata.";
   }
+  
+  const errorEl = document.getElementById(roleLabel === 'B' ? 'status-camera-b' : 'status-ocr-c');
+  if (errorEl) {
+    errorEl.innerText = "Errore Camera";
+    errorEl.className = "badge badge-error";
+  }
+  alert(msg);
 }
 
-// Handle incoming WebRTC signaling messages
-async function handleSignalingMessage(from, signalData) {
-  if (role === 'A') {
-    if (signalData.ocrData) {
-      handleReceivedOcrData(signalData.ocrData);
-      return;
-    }
-    // A receives signaling from B or C
-    let pc = from === 'B' ? peerConnectionB : peerConnectionC;
+// C's Zoom Rendering Loop (Standard Preview when OpenCV isn't running)
+let previewLoopCActive = false;
+function startPreviewLoopC() {
+  previewLoopCActive = true;
+  requestAnimationFrame(previewLoopC);
+}
+
+function previewLoopC() {
+  if (!previewLoopCActive) return;
+  if (ocrRunning) return;
+  
+  const video = document.getElementById('video-preview-c');
+  if (video && video.readyState >= 2) {
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    initCleanCanvasC(w, h);
     
-    if (!pc) {
-      pc = new RTCPeerConnection(rtcConfig);
-      if (from === 'B') {
-        peerConnectionB = pc;
-        pc.ontrack = (event) => {
-          console.log('Ricevuta traccia video da B');
-          const hiddenVideo = document.getElementById('hidden-video-a');
-          hiddenVideo.srcObject = event.streams[0];
-          hiddenVideo.play();
-        };
-      } else {
-        peerConnectionC = pc;
-        pc.ondatachannel = (event) => {
-          console.log('Ricevuto DataChannel da C');
-          const channel = event.channel;
-          channel.onmessage = (e) => {
-            handleReceivedOcrData(JSON.parse(e.data));
-          };
-          // Keep a reference to send manual corrections back to C
-          dataChannelC = channel;
-        };
-      }
+    const cropW = w / zoomLevel;
+    const cropH = h / zoomLevel;
+    const cropX = (w - cropW) / 2;
+    const cropY = (h - cropH) / 2;
+    cleanCtxC.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, w, h);
+    
+    ctxCalib.drawImage(cleanCanvasC, 0, 0, w, h);
+    drawCalibrationLayer();
+  }
+  requestAnimationFrame(previewLoopC);
+}
 
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          sendSignal(from, { candidate: event.candidate });
-        }
-      };
-    }
-
-    if (signalData.sdp) {
-      await pc.setRemoteDescription(new RTCSessionDescription(signalData.sdp));
-      if (signalData.sdp.type === 'offer') {
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        sendSignal(from, { sdp: pc.localDescription });
-      }
-    } else if (signalData.candidate) {
-      await pc.addIceCandidate(new RTCIceCandidate(signalData.candidate));
-    }
-
+// Global hidden canvas for C clean video (no overlay lines)
+let cleanCanvasC = null;
+let cleanCtxC = null;
+function initCleanCanvasC(w, h) {
+  if (!cleanCanvasC) {
+    cleanCanvasC = document.createElement('canvas');
+    cleanCanvasC.id = 'canvas-clean-c';
+    cleanCanvasC.width = w;
+    cleanCanvasC.height = h;
+    cleanCtxC = cleanCanvasC.getContext('2d');
   } else {
-    // B or C receives signaling from A
-    if (!peerConnectionMatch) return;
-    
-    if (signalData.sdp) {
-      await peerConnectionMatch.setRemoteDescription(new RTCSessionDescription(signalData.sdp));
-      if (signalData.sdp.type === 'offer') {
-        const answer = await peerConnectionMatch.createAnswer();
-        await peerConnectionMatch.setLocalDescription(answer);
-        sendSignal('A', { sdp: peerConnectionMatch.localDescription });
-      }
-    } else if (signalData.candidate) {
-      await peerConnectionMatch.addIceCandidate(new RTCIceCandidate(signalData.candidate));
-    }
+    cleanCanvasC.width = w;
+    cleanCanvasC.height = h;
+  }
+}
+
+// Setup zoom button event listeners
+function setupZoomEventListeners() {
+  const zoomInBtn = document.getElementById('zoomIn');
+  const zoomOutBtn = document.getElementById('zoomOut');
+  const zoomLabel = document.getElementById('zoomLabel');
+
+  if (zoomInBtn && zoomOutBtn && zoomLabel) {
+    zoomInBtn.onclick = () => {
+      zoomLevel = Math.min(3.0, parseFloat((zoomLevel + 0.5).toFixed(1)));
+      zoomLabel.textContent = zoomLevel + 'x';
+    };
+    zoomOutBtn.onclick = () => {
+      zoomLevel = Math.max(1.0, parseFloat((zoomLevel - 0.5).toFixed(1)));
+      zoomLabel.textContent = zoomLevel + 'x';
+    };
   }
 }
 
@@ -442,6 +704,8 @@ let broadcastRunning = false;
 
 function initDirector() {
   document.getElementById('display-match-id').innerText = matchId;
+  updateConnectionStatus('B', false);
+  updateConnectionStatus('C', false);
   
   // Create QR codes dynamically using window.location.origin
   const base = window.location.origin;
@@ -483,7 +747,7 @@ function drawBroadcastLoop() {
   if (!broadcastRunning) return;
 
   // 1. Draw camera video background
-  const hiddenVideo = document.getElementById('hidden-video-a');
+  const hiddenVideo = document.getElementById('videoFromB');
   if (hiddenVideo && hiddenVideo.readyState >= 2) {
     ctxA.drawImage(hiddenVideo, 0, 0, canvasA.width, canvasA.height);
   } else {
@@ -1054,9 +1318,21 @@ async function initCameraMatch() {
     
     const videoPreview = document.getElementById('video-preview-b');
     videoPreview.srcObject = localStream;
+    
+    videoPreview.onloadedmetadata = () => {
+      const canvasB = document.getElementById('canvas-preview-b');
+      canvasB.width = videoPreview.videoWidth;
+      canvasB.height = videoPreview.videoHeight;
+      
+      startZoomLoopB();
+      
+      // If websocket already joined, setup peer connection
+      if (ws && ws.readyState === WebSocket.OPEN && peerConnectionMatch === null) {
+        setupWebRTCPeerB();
+      }
+    };
   } catch (err) {
-    console.error('Camera access failed on B:', err);
-    alert('Impossibile accedere alla fotocamera su B: ' + err.message);
+    handleCameraError(err, 'B');
   }
 }
 
@@ -1148,11 +1424,11 @@ async function initCameraBoard() {
   // Tap corners listener
   canvasCalib.addEventListener('click', handleCalibrationTap);
 
-  // Initialize camera and OpenCV loop
+  // Initialize camera immediately
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
       video: {
-        facingMode: 'environment', // rear
+        facingMode: 'environment', // rear camera
         width: { ideal: 1920 },    // high resolution to capture scoreboard details
         height: { ideal: 1080 }
       },
@@ -1162,11 +1438,20 @@ async function initCameraBoard() {
     const videoPreview = document.getElementById('video-preview-c');
     videoPreview.srcObject = localStream;
     
-    // Start canvas sizing sync
+    // Start preview and setup signaling once video metadata is active
     videoPreview.onloadedmetadata = () => {
       canvasCalib.width = videoPreview.videoWidth;
       canvasCalib.height = videoPreview.videoHeight;
-      checkOpenCvStatus();
+      
+      // Start camera preview rendering loop immediately (including digital zoom)
+      startPreviewLoopC();
+      
+      loadOpenCvDynamically();
+      
+      // If websocket already joined, setup peer connection
+      if (ws && ws.readyState === WebSocket.OPEN && peerConnectionMatch === null) {
+        setupWebRTCPeerC();
+      }
     };
   } catch (err) {
     console.error('Camera access failed on C:', err);
@@ -1174,15 +1459,62 @@ async function initCameraBoard() {
   }
 }
 
-// Check if OpenCV is loaded and running
-function checkOpenCvStatus() {
+// Dynamically load OpenCV.js with status and error handling on C
+function loadOpenCvDynamically() {
+  const statusBadge = document.getElementById('status-opencv');
+  
+  if (typeof cv !== 'undefined' && cv.Mat) {
+    statusBadge.innerText = 'Pronto';
+    statusBadge.className = 'badge badge-primary';
+    startOcrLoop();
+    return;
+  }
+  
+  statusBadge.innerText = 'Caricamento OpenCV... (potrebbe richiedere qualche secondo)';
+  statusBadge.className = 'badge badge-neutral';
+
+  let script = document.getElementById('opencv-script');
+  if (!script) {
+    script = document.createElement('script');
+    script.id = 'opencv-script';
+    script.src = '/libs/opencv.js';
+    
+    script.onerror = () => {
+      console.error('Errore caricamento OpenCV.js');
+      statusBadge.innerText = 'Errore OpenCV';
+      statusBadge.className = 'badge badge-error';
+      mostraErrore('OpenCV non trovato. Riavvia il server con npm run dev.');
+    };
+    
+    script.onload = () => {
+      console.log('OpenCV.js caricato, in attesa del runtime...');
+      waitForCvReady();
+    };
+    
+    document.head.appendChild(script);
+  } else {
+    waitForCvReady();
+  }
+}
+
+function waitForCvReady() {
   const statusBadge = document.getElementById('status-opencv');
   if (typeof cv !== 'undefined' && cv.Mat) {
     statusBadge.innerText = 'Pronto';
     statusBadge.className = 'badge badge-primary';
     startOcrLoop();
   } else {
-    setTimeout(checkOpenCvStatus, 500);
+    setTimeout(waitForCvReady, 200);
+  }
+}
+
+function mostraErrore(messaggio) {
+  alert(messaggio);
+  const banner = document.getElementById('offline-banner');
+  if (banner) {
+    banner.innerText = messaggio;
+    banner.className = "banner badge-error";
+    banner.classList.remove('hidden');
   }
 }
 
@@ -1209,7 +1541,7 @@ function saveCalibration() {
 
 // Draw calibration boxes & points on preview
 function drawCalibrationLayer() {
-  ctxCalib.clearRect(0, 0, canvasCalib.width, canvasCalib.height);
+  // Overlays are drawn on top of the already drawn video frame, so we don't clear the context.
 
   // Draw current frames for each ROI
   for (const [field, points] of Object.entries(calibPoints)) {
@@ -1264,22 +1596,36 @@ function ocrProcessFrame() {
   if (!ocrRunning) return;
 
   try {
-    // 1. Capture current frame from video feed
-    cap.read(srcFrame);
-
-    // 2. Draw calibration overlay in the canvas
-    drawCalibrationLayer();
-
-    // 3. Process each calibrated field
-    for (const [field, points] of Object.entries(calibPoints)) {
-      if (points.length === 4) {
-        processRoiField(srcFrame, field, points);
+    const video = document.getElementById('video-preview-c');
+    if (video && video.readyState >= 2) {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      initCleanCanvasC(w, h);
+      
+      // 1. Draw zoomed/cropped video to clean canvas (no overlays)
+      const cropW = w / zoomLevelC;
+      const cropH = h / zoomLevelC;
+      const cropX = (w - cropW) / 2;
+      const cropY = (h - cropH) / 2;
+      cleanCtxC.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, w, h);
+      
+      // 2. Draw zoomed video to the visible canvas-calibration, then draw overlays
+      ctxCalib.drawImage(cleanCanvasC, 0, 0, w, h);
+      drawCalibrationLayer();
+      
+      // 3. Capture frame for OpenCV from the clean canvas!
+      cap.read(srcFrame);
+      
+      // 4. Process each calibrated field
+      for (const [field, points] of Object.entries(calibPoints)) {
+        if (points.length === 4) {
+          processRoiField(srcFrame, field, points);
+        }
       }
+      
+      // 5. Send official voted state back to A
+      sendOcrStateToDirector();
     }
-
-    // 4. Send official voted state back to A via RTCDataChannel (or ws if dataChannel not ready)
-    sendOcrStateToDirector();
-
   } catch (err) {
     console.error('Errore loop OCR OpenCV:', err);
   }

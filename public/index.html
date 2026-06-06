@@ -51,15 +51,28 @@
          2. DISPOSITIVO A — REGIA (Director)
          ============================================== -->
     <div id="screen-director" class="screen hidden">
+      <!-- Debug log overlay -->
+      <div id="debug" style="position:fixed;top:0;left:0;background:rgba(0,0,0,0.7);
+           color:lime;font-size:12px;padding:8px;z-index:999;white-space:pre">ICE: waiting...</div>
+      <!-- Connection status monitors -->
+      <div style="position:fixed;top:40px;left:0;background:rgba(0,0,0,0.7);
+           color:white;font-size:12px;padding:8px;z-index:999;white-space:pre;border-bottom-right-radius:4px;">
+        <div id="statusB">Video B: in attesa...</div>
+        <div id="statusC">Dati C: in attesa...</div>
+      </div>
+
       <div class="director-layout">
         <!-- Main Column: Video & Overlay Canvas -->
         <div class="main-column">
           <div class="panel-video card">
             <div class="panel-header">
               <h2>Compositing Broadcast (Live Preview)</h2>
-              <div class="recording-status">
-                <span id="rec-dot" class="dot"></span>
-                <span id="rec-timer">00:00:00</span>
+              <div style="display: flex; gap: 15px; align-items: center;">
+                <span id="status-video-received" class="badge badge-neutral">In attesa video...</span>
+                <div class="recording-status">
+                  <span id="rec-dot" class="dot"></span>
+                  <span id="rec-timer">00:00:00</span>
+                </div>
               </div>
             </div>
             
@@ -177,8 +190,17 @@
         Stato Connessione: <span id="status-camera-b" class="badge badge-error">Disconnesso</span>
       </div>
       
+      <!-- Zoom UI Dispositivo B -->
+      <div class="zoom-container">
+        <span>Zoom Digitale:</span>
+        <button id="btn-zoom-out-b" class="btn-mini">-</button>
+        <span id="label-zoom-b">1.0x</span>
+        <button id="btn-zoom-in-b" class="btn-mini">+</button>
+      </div>
+
       <div class="video-preview-wrapper">
-        <video id="video-preview-b" autoplay playsinline muted></video>
+        <canvas id="canvas-preview-b"></canvas>
+        <video id="video-preview-b" autoplay playsinline muted class="hidden"></video>
       </div>
       <p class="instruction">Inquadra il campo. Questo flusso video è inviato direttamente alla regia via WebRTC locale.</p>
     </div>
@@ -204,6 +226,14 @@
           </div>
           
           <div class="calibration-controls">
+            <!-- Zoom UI Dispositivo C -->
+            <div class="zoom-container">
+              <span>Zoom:</span>
+              <button id="btn-zoom-out-c" class="btn-mini">-</button>
+              <span id="label-zoom-c">1.0x</span>
+              <button id="btn-zoom-in-c" class="btn-mini">+</button>
+            </div>
+
             <div class="roi-selector-group">
               <label for="select-roi">Seleziona Campo da Calibrare:</label>
               <select id="select-roi" class="select-premium">
@@ -297,12 +327,22 @@
   </div>
 
   <!-- Hidden video element for local stream extraction of A -->
-  <video id="hidden-video-a" autoplay playsinline muted class="hidden"></video>
+  <video id="videoFromB" autoplay playsinline muted class="hidden"></video>
+
+  <!-- Fixed zoom controls for B and C roles -->
+  <div id="zoom-controls" class="hidden" style="position:fixed;bottom:30px;left:50%;
+       transform:translateX(-50%);display:flex;gap:20px;z-index:100">
+    <button id="zoomOut" style="width:64px;height:64px;font-size:28px;
+            border-radius:50%;background:#1e293b;color:white;border:1px solid rgba(255,255,255,0.2);cursor:pointer;">−</button>
+    <span id="zoomLabel" style="line-height:64px;font-size:20px;
+          min-width:60px;text-align:center;color:white;">1.0x</span>
+    <button id="zoomIn" style="width:64px;height:64px;font-size:28px;
+            border-radius:50%;background:#1e293b;color:white;border:1px solid rgba(255,255,255,0.2);cursor:pointer;">+</button>
+  </div>
 
   <!-- Load Local Libraries -->
   <script src="libs/qrcode.min.js"></script>
   <script src="libs/jsqr.js"></script>
-  <script src="libs/opencv.js" async></script>
   <script src="app.js"></script>
 </body>
 </html>

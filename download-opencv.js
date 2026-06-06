@@ -4,6 +4,14 @@ const https = require('https');
 
 const LIBS_DIR = path.join(__dirname, 'public', 'libs');
 
+// Check if opencv.js already exists to avoid redundant download on startup
+const opencvDest = path.join(LIBS_DIR, 'opencv.js');
+if (fs.existsSync(opencvDest)) {
+  console.log('opencv.js già presente, skip download.');
+  process.exit(0);
+}
+
+
 const LIBRARIES = [
   {
     name: 'opencv.js',
