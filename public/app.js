@@ -1088,147 +1088,169 @@ function clockToSeconds(clockStr) {
 }
 
 // ==========================================================================
-// Director Recording System (High-Performance OPFS via Inline Web Worker)
+// Director Recording System (High-Performance OPFS via External Web Worker)
 // ==========================================================================
+let recorderWorker = null;
 let mediaRecorder = null;
 let recording = false;
 let recordStartTime = 0;
 let recordTimerInterval = null;
-let recordFileHandle = null;
+let wakeLockSentinel = null;
 
-const opfsWorkerCode = `
-  let fileHandle = null;
-  let accessHandle = null;
-  let offset = 0;
-
-  self.onmessage = async (e) => {
-    const { type, handle, chunk } = e.data;
-    
-    if (type === 'init') {
+async function startRecording(canvas) {
+  try {
+    if ('wakeLock' in navigator) {
       try {
-        fileHandle = handle;
-        accessHandle = await fileHandle.createAccessHandle();
-        offset = 0;
-        self.postMessage({ type: 'ready' });
-      } catch (err) {
-        self.postMessage({ type: 'error', error: err.message });
-      }
-    } else if (type === 'write') {
-      if (!accessHandle) return;
-      try {
-        const bytesWritten = accessHandle.write(chunk, { at: offset });
-        offset += bytesWritten;
-        self.postMessage({ type: 'written', offset });
-      } catch (err) {
-        self.postMessage({ type: 'error', error: err.message });
-      }
-    } else if (type === 'close') {
-      if (accessHandle) {
-        await accessHandle.close();
-        accessHandle = null;
-        self.postMessage({ type: 'closed' });
+        wakeLockSentinel = await navigator.wakeLock.request('screen');
+        console.log('Screen Wake Lock attivato.');
+      } catch (wlErr) {
+        console.warn('Errore Screen Wake Lock:', wlErr);
       }
     }
-  };
-`;
+  } catch (err) {}
 
-let opfsWorker = null;
-let wakeLockSentinel = null;
+  // Avvia il worker usando il file relativo per prevenire problemi di subpath
+  recorderWorker = new Worker('recorder.worker.js');
+
+  recorderWorker.onmessage = (e) => {
+    if (e.data.type === 'ready') {
+      // Worker pronto: avvia MediaRecorder
+      const stream = canvas.captureStream(30);
+      const mimeType = MediaRecorder.isTypeSupported('video/mp4')
+        ? 'video/mp4' : '';
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recorderWorker.postMessage({ type: 'chunk', blob: event.data });
+        }
+      };
+
+      mediaRecorder.start(1000); // chunk ogni secondo
+      document.getElementById('recStatus').textContent = '● Registrazione in corso';
+      document.getElementById('screen-director').classList.add('recording');
+      
+      recordStartTime = Date.now();
+      clearInterval(recordTimerInterval);
+      recordTimerInterval = setInterval(updateRecordTimer, 1000);
+      
+      const btn = document.getElementById('btn-toggle-rec');
+      btn.innerText = 'Ferma Registrazione';
+      btn.classList.remove('disabled');
+      btn.removeAttribute('disabled');
+    }
+    if (e.data.type === 'progress') {
+      const mb = (e.data.bytes / 1024 / 1024).toFixed(1);
+      document.getElementById('recSize').textContent = mb + ' MB';
+    }
+    if (e.data.type === 'done') {
+      exportRecording();
+      resetRecordingUI();
+    }
+    if (e.data.type === 'error') {
+      document.getElementById('recStatus').textContent =
+        'Errore registrazione: ' + e.data.message;
+      resetRecordingUI();
+    }
+  };
+
+  // Inizializza il file OPFS nel worker
+  recorderWorker.postMessage({ type: 'init' });
+}
+
+async function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+    mediaRecorder.onstop = () => {
+      if (recorderWorker) {
+        recorderWorker.postMessage({ type: 'stop' });
+      }
+    };
+  }
+}
+
+async function exportRecording() {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const fh = await root.getFileHandle('recording.mp4');
+    const file = await fh.getFile();
+
+    // Mostra pulsanti ausiliari per condivisione manuale e download
+    const btnShare = document.getElementById('btn-share-video');
+    if (btnShare) {
+      btnShare.classList.remove('hidden');
+      btnShare.onclick = async () => {
+        if (navigator.share) {
+          await navigator.share({
+            files: [file],
+            title: 'Partita Basket Registrata',
+            text: 'Ecco il video della partita con overlay TV'
+          });
+        } else {
+          alert('Condivisione non supportata.');
+        }
+      };
+    }
+
+    const btnDownload = document.getElementById('btn-download-video');
+    if (btnDownload) {
+      btnDownload.classList.remove('hidden');
+      btnDownload.onclick = () => {
+        const url = URL.createObjectURL(file);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `partita_${matchId}.mp4`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+    }
+
+    // Prova condivisione immediata se supportata
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'Registrazione partita' });
+    } else {
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `partita_${matchId}.mp4`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  } catch (err) {
+    console.error('Errore esportazione file:', err);
+  }
+}
+
+function resetRecordingUI() {
+  recording = false;
+  document.getElementById('screen-director').classList.remove('recording');
+  const btn = document.getElementById('btn-toggle-rec');
+  btn.innerText = 'Avvia Registrazione';
+  btn.classList.remove('disabled');
+  btn.removeAttribute('disabled');
+  
+  if (wakeLockSentinel) {
+    wakeLockSentinel.release().catch(() => {});
+    wakeLockSentinel = null;
+  }
+  clearInterval(recordTimerInterval);
+}
 
 async function toggleRecording() {
   const btn = document.getElementById('btn-toggle-rec');
   
   if (recording) {
-    recording = false;
-    document.getElementById('screen-director').classList.remove('recording');
     btn.innerText = 'Preparo video...';
     btn.classList.add('disabled');
     btn.setAttribute('disabled', 'true');
-    
-    if (mediaRecorder) {
-      mediaRecorder.stop();
-    }
+    await stopRecording();
   } else {
-    try {
-      if ('wakeLock' in navigator) {
-        try {
-          wakeLockSentinel = await navigator.wakeLock.request('screen');
-          console.log('Screen Wake Lock attivato.');
-        } catch (wlErr) {
-          console.warn('Errore Screen Wake Lock:', wlErr);
-        }
-      }
-
-      const root = await navigator.storage.getDirectory();
-      recordFileHandle = await root.getFileHandle('partita.mp4', { create: true });
-      
-      const blob = new Blob([opfsWorkerCode], { type: 'application/javascript' });
-      const workerUrl = URL.createObjectURL(blob);
-      opfsWorker = new Worker(workerUrl);
-      
-      opfsWorker.postMessage({ type: 'init', handle: recordFileHandle });
-      
-      opfsWorker.onmessage = (e) => {
-        if (e.data.type === 'error') {
-          console.error('OPFS Worker Error:', e.data.error);
-        } else if (e.data.type === 'ready') {
-          startStreamCapture();
-        }
-      };
-    } catch (err) {
-      console.error('Inizializzazione registrazione fallita:', err);
-      alert('Impossibile iniziare la registrazione su disco: ' + err.message);
-    }
+    recording = true;
+    btn.innerText = 'Avvio registrazione...';
+    btn.classList.add('disabled');
+    btn.setAttribute('disabled', 'true');
+    await startRecording(canvasA);
   }
-}
-
-function startStreamCapture() {
-  const canvasStream = canvasA.captureStream(30); 
-  let mimeType = 'video/mp4';
-  if (!MediaRecorder.isTypeSupported(mimeType)) {
-    mimeType = ''; 
-  }
-  
-  mediaRecorder = new MediaRecorder(canvasStream, { mimeType });
-  
-  mediaRecorder.ondataavailable = async (event) => {
-    if (event.data && event.data.size > 0 && opfsWorker) {
-      const buffer = await event.data.arrayBuffer();
-      opfsWorker.postMessage({ type: 'write', chunk: buffer }, [buffer]);
-    }
-  };
-  
-  mediaRecorder.onstop = async () => {
-    if (opfsWorker) {
-      opfsWorker.postMessage({ type: 'close' });
-      opfsWorker.onmessage = async (e) => {
-        if (e.data.type === 'closed') {
-          opfsWorker.terminate();
-          opfsWorker = null;
-          await finalizeFileExport();
-        }
-      };
-    }
-    
-    if (wakeLockSentinel) {
-      await wakeLockSentinel.release();
-      wakeLockSentinel = null;
-    }
-    
-    clearInterval(recordTimerInterval);
-  };
-  
-  mediaRecorder.start(1000); 
-  
-  recording = true;
-  document.getElementById('screen-director').classList.add('recording');
-  const btn = document.getElementById('btn-toggle-rec');
-  btn.innerText = 'Ferma Registrazione';
-  btn.classList.remove('disabled');
-  btn.removeAttribute('disabled');
-  
-  recordStartTime = Date.now();
-  recordTimerInterval = setInterval(updateRecordTimer, 1000);
 }
 
 function updateRecordTimer() {
@@ -1239,44 +1261,6 @@ function updateRecordTimer() {
   
   document.getElementById('rec-timer').innerText = 
     `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-}
-
-async function finalizeFileExport() {
-  const file = await recordFileHandle.getFile();
-  
-  const btnShare = document.getElementById('btn-share-video');
-  btnShare.classList.remove('hidden');
-  btnShare.onclick = async () => {
-    try {
-      if (navigator.share) {
-        await navigator.share({
-          files: [file],
-          title: 'Partita Basket Registrata',
-          text: 'Ecco il video della partita con overlay TV'
-        });
-      } else {
-        alert('Condivisione non supportata da questo browser.');
-      }
-    } catch (err) {
-      console.warn('Errore condivisione file:', err);
-    }
-  };
-
-  const btnDownload = document.getElementById('btn-download-video');
-  btnDownload.classList.remove('hidden');
-  btnDownload.onclick = () => {
-    const url = URL.createObjectURL(file);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `partita_${matchId}.mp4`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const btnToggleRec = document.getElementById('btn-toggle-rec');
-  btnToggleRec.innerText = 'Avvia Nuova Registrazione';
-  btnToggleRec.classList.remove('disabled');
-  btnToggleRec.removeAttribute('disabled');
 }
 
 // ==========================================================================
