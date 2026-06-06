@@ -1,72 +1,64 @@
 # Guida al Deploy su Render — CourtCast Broadcast System
 
-Questo documento contiene le istruzioni passo-passo per gestire il codice tramite Git ed abilitare il deploy automatico su Render ad ogni push sul repository di GitHub.
+Segui questi passi in ordine per caricare l'applicazione su GitHub e configurare il deploy automatico su Render.
 
 ---
 
-## 1. Setup Iniziale del Repository (Prima volta)
-
-Dal terminale del tuo computer, posizionati all'interno della cartella principale di questo progetto ed esegui i seguenti comandi:
-
-1. **Inizializza Git** e crea il primo commit locale (il file `.gitignore` escluderà automaticamente la cartella `node_modules` e il file gigante `opencv.js`):
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   ```
-
-2. **Crea un nuovo repository su GitHub**:
-   - Vai su [github.com](https://github.com) ed esegui l'accesso.
-   - Crea un nuovo repository (può essere sia pubblico che privato) chiamandolo, ad esempio, `regia-basket`.
-   - Copia l'indirizzo HTTPS del repository appena creato (ad esempio: `https://github.com/tuonome/regia-basket.git`).
-
-3. **Collega il repository locale a GitHub** ed esegui il push:
-   ```bash
-   git remote add origin https://github.com/tuonome/regia-basket.git
-   git branch -M main
-   git push -u origin main
-   ```
+### STEP 1 — Installa Git (se non presente)
+Se non hai Git installato sul tuo PC Windows:
+1. Scarica l'installer da [git-scm.com](https://git-scm.com).
+2. Avvia l'installazione e procedi cliccando su **Next** lasciando tutte le opzioni predefinite.
 
 ---
 
-## 2. Configurazione e Deploy Automatico su Render
+### STEP 2 — Crea un account GitHub
+1. Vai su [github.com](https://github.com) e registrati (o accedi se hai già un account).
+2. Clicca su **New Repository** (o sul tasto "+" in alto a destra) per creare un repository:
+   - Nome repository: `regia-basket`
+   - Visibilità: a tua scelta (**Public** o **Private**)
+   - **IMPORTANTE:** Lascia deselezionate le opzioni per aggiungere un README, un file .gitignore o una licenza (crea un repository vuoto).
+3. Una volta creato, copia l'URL HTTPS fornito (sarà simile a: `https://github.com/tuonome/regia-basket.git`).
 
-1. Vai su [render.com](https://render.com) e crea un account (o accedi).
-2. Clicca sul pulsante **"New"** in alto a destra e seleziona **"Web Service"**.
-3. Collega il tuo account GitHub a Render (se non lo hai già fatto) e seleziona il repository `regia-basket` dall'elenco.
-4. Render rileverà automaticamente la presenza del file `render.yaml` nella root del progetto e precompilerà tutte le configurazioni:
-   - **Name**: `regia-basket`
-   - **Runtime**: `Node`
-   - **Build Command**: `npm install && npm run build`
+---
+
+### STEP 3 — Esegui lo script di setup
+Apri PowerShell, posizionati nella cartella principale del progetto ed esegui lo script interattivo:
+
+```powershell
+.\setup.ps1
+```
+
+> [!NOTE]
+> Se ricevi un errore di sicurezza relativo all'esecuzione degli script in PowerShell, puoi sbloccare temporaneamente l'esecuzione eseguendo:
+> `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+> e poi riavviando il comando `.\setup.ps1`.
+
+Segui le istruzioni a schermo:
+- Inserisci il tuo **Nome** e la tua **Email** per firmare i commit (se non li hai già configurati a livello globale in Git).
+- Incolla l'**URL del repository GitHub** copiato al punto 2.
+Lo script si occuperà di creare il commit locale, configurare il ramo principale `main`, collegare il tuo GitHub e fare il primo push.
+
+---
+
+### STEP 4 — Configura Render
+1. Vai su [render.com](https://render.com) e crea un account gratuito collegando il tuo profilo GitHub.
+2. Clicca sul pulsante **New** in alto a destra e seleziona **Web Service**.
+3. Associa il repository `regia-basket` appena creato.
+4. Render leggerà automaticamente il file `render.yaml` presente nella radice del progetto e configurerà i comandi:
+   - **Build Command**: `npm install && npm run build` (che scaricherà OpenCV.js offline in produzione)
    - **Start Command**: `npm start`
-5. Scorri in fondo alla pagina e clicca su **"Create Web Service"**.
-6. Render avvierà la build (eseguendo il download di OpenCV.js e delle librerie locali direttamente sul cloud in fase di compilazione) e renderà attiva l'applicazione.
-7. Una volta terminato il processo (circa 1-2 minuti), Render ti mostrerà l'URL pubblico sicuro:
-   `https://regia-basket.onrender.com` (o un nome simile a seconda della disponibilità).
+5. Clicca su **Create Web Service** e attendi circa 2 minuti per il completamento del deploy.
+6. Render ti fornirà un URL pubblico con protocollo sicuro HTTPS (ad esempio: `https://regia-basket.onrender.com`).
 
 ---
 
-## 3. Workflow Quotidiano: Modifica e Deploy
-
-Il deploy automatico è completamente configurato! Per qualsiasi modifica futura al codice dell'applicazione, non c'è bisogno di accedere a Render. È sufficiente salvare ed eseguire il push da terminale:
+### STEP 5 — Workflow quotidiano
+Una volta effettuato il primo deploy, ogni successiva modifica viene applicata in automatico. Dal terminale locale ti basterà fare:
 
 ```bash
 git add .
-git commit -m "Descrizione della modifica apportata"
+git commit -m "Descrizione delle modifiche apportate"
 git push
 ```
 
-Render rileverà istantaneamente il push su GitHub, avvierà una nuova build di produzione in background ed effettuerà il deploy in automatico senza disservizi (Zero-Downtime Deploy).
-
----
-
-## 4. Note Operative Importanti
-
-> [!NOTE]
-> **Sleep del Piano Gratuito (Cold Start):**
-> Se utilizzi il piano gratuito di Render, il servizio entra in modalità standby dopo 15 minuti di inattività. Prima di iniziare una partita di basket o una sessione di test sul campo, apri l'URL pubblico della regia sul browser A e attendi 30-60 secondi affinché il server si riattivi.
-
-> [!IMPORTANT]
-> **Produzione e Sviluppo Locale:**
-> - Per sviluppare e fare test in locale, puoi continuare ad avviare il server con il comando `npm run dev` (eseguito su `localhost:3000`).
-> - Il deploy su Render viene utilizzato esclusivamente come server di produzione sicuro e pubblico a cui far connettere i telefoni tramite ngrok (in sviluppo) o direttamente online (in produzione).
+Render rileverà la modifica su GitHub e avvierà il deploy in background del nuovo codice in tempo reale.
