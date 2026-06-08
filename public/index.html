@@ -183,6 +183,37 @@
             </div>
             <p class="small-text">Scansiona i QR code per connettere la camera video (B) e l'OCR (C).</p>
           </div>
+
+          <!-- Tabellone (C) Live Calibration Panel -->
+          <div class="panel-board-c card">
+            <div class="panel-header">
+              <h2>Tabellone (C)</h2>
+            </div>
+            <div class="video-c-wrapper" style="position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 6px; overflow: hidden; border: 1px solid var(--border-color);">
+              <video id="videoFromC" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover; display: block;"></video>
+              <canvas id="calibOverlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none;"></canvas>
+            </div>
+            
+            <div id="calibPanel" style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
+              <div id="roiSelector" style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+                <span style="font-size: 0.9rem; font-weight: 600; color: var(--text-secondary);">Calibra:</span>
+                <select id="roiSelect" class="select-premium" style="flex-grow: 1; padding: 6px; font-size: 0.9rem; background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); color: #fff; border-radius: 4px;">
+                  <option value="0">Punti Casa</option>
+                  <option value="1">Punti Ospiti</option>
+                  <option value="2">Cronometro</option>
+                  <option value="3">Quarto</option>
+                  <option value="4">Falli Casa</option>
+                  <option value="5">Falli Ospiti</option>
+                </select>
+              </div>
+              <p id="calibInstructions" style="font-size: 0.8rem; color: var(--text-secondary); margin: 0;">Tocca i 4 angoli della zona selezionata</p>
+              <div id="calibProgress" style="font-size: 0.85rem; font-weight: bold; color: var(--color-warning);">0/6 zone calibrate</div>
+              <div style="display: flex; gap: 10px;">
+                <button id="sendCalib" class="btn btn-primary" disabled style="padding: 8px; font-size: 0.85rem; flex-grow: 1; min-height: auto; width: auto; font-family: var(--font-title);">Invia calibrazione a C</button>
+                <button id="resetCalib" class="btn btn-secondary" style="padding: 8px; font-size: 0.85rem; width: auto; min-height: auto; font-family: var(--font-title);">Reset</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -203,117 +234,49 @@
     <!-- ==============================================
          4. DISPOSITIVO C — CAMERA TABELLONE (Scoreboard OCR)
          ============================================== -->
-    <div id="screen-camera-board" class="screen hidden">
-      <div class="ocr-layout">
-        <!-- Main Calibration & Camera Area -->
-        <div class="ocr-camera-panel card">
-          <div class="panel-header">
-            <h2>Calibrazione OCR Tabellone (C)</h2>
-            <div>
-              Stato: <span id="status-ocr-c" class="badge badge-error">Disconnesso</span>
-              OpenCV: <span id="status-opencv" class="badge badge-neutral">Caricamento...</span>
-            </div>
-          </div>
-          
-          <div class="ocr-view-wrapper">
-            <video id="video-preview-c" autoplay playsinline muted></video>
-            <canvas id="canvas-calibration"></canvas>
-          </div>
-          
-          <div class="calibration-controls">
-            <!-- Zoom UI Dispositivo C -->
-            <div class="zoom-container">
-              <span>Zoom:</span>
-              <button id="btn-zoom-out-c" class="btn-mini">-</button>
-              <span id="label-zoom-c">1.0x</span>
-              <button id="btn-zoom-in-c" class="btn-mini">+</button>
-            </div>
-
-            <div class="roi-selector-group">
-              <label for="select-roi">Seleziona Campo da Calibrare:</label>
-              <select id="select-roi" class="select-premium">
-                <option value="homeScore">Punti Casa</option>
-                <option value="awayScore">Punti Ospiti</option>
-                <option value="clock">Cronometro</option>
-                <option value="quarter">Quarto</option>
-                <option value="homeFouls">Falli Casa</option>
-                <option value="awayFouls">Falli Ospiti</option>
-              </select>
-            </div>
-            
-            <button id="btn-clear-roi" class="btn btn-secondary">Azzera ROI Corrente</button>
-          </div>
+    <div id="screen-camera-board" class="screen hidden" style="position: relative; width: 100%; height: 98vh; padding: 0; overflow: hidden; background-color: #000;">
+      <video id="video-preview-c" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover; display: block;"></video>
+      
+      <!-- OCR & Connection Status HUD (Absolute Overlay) -->
+      <div style="position: absolute; top: 20px; left: 20px; background: rgba(15, 23, 42, 0.85); 
+                  border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; z-index: 100;
+                  font-family: var(--font-title); display: flex; flex-direction: column; gap: 8px; min-width: 200px;">
+        <div style="font-size: 0.9rem; font-weight: bold;">Camera Tabellone (C)</div>
+        <div style="font-size: 0.8rem; color: var(--text-secondary);">
+          Stato: <span id="status-ocr-c" class="badge badge-error">Disconnesso</span>
         </div>
-        
-        <!-- OCR Diagnostics & Warped Previews Sidebar -->
-        <div class="ocr-diagnostics-panel card">
-          <h2>Monitor Letture & Correzioni</h2>
-          
-          <div class="settings-box">
-            <h3>Filtro Immagine</h3>
-            <div class="form-group-row">
-              <label for="slider-threshold">Soglia Override (0 = Auto):</label>
-              <input type="range" id="slider-threshold" min="0" max="255" value="0">
-              <span id="val-threshold-slider">Auto</span>
-            </div>
-          </div>
-
-          <div class="warped-previews-container">
-            <div class="warped-preview-item" data-field="homeScore">
-              <span class="preview-label">Punti Casa</span>
-              <div class="preview-canvas-box">
-                <canvas id="warped-homeScore" width="80" height="60"></canvas>
-                <canvas id="thresh-homeScore" width="80" height="60"></canvas>
-              </div>
-              <span class="preview-val" id="ocr-val-homeScore">--</span>
-            </div>
-            
-            <div class="warped-preview-item" data-field="awayScore">
-              <span class="preview-label">Punti Ospiti</span>
-              <div class="preview-canvas-box">
-                <canvas id="warped-awayScore" width="80" height="60"></canvas>
-                <canvas id="thresh-awayScore" width="80" height="60"></canvas>
-              </div>
-              <span class="preview-val" id="ocr-val-awayScore">--</span>
-            </div>
-            
-            <div class="warped-preview-item" data-field="clock">
-              <span class="preview-label">Cronometro</span>
-              <div class="preview-canvas-box">
-                <canvas id="warped-clock" width="160" height="60"></canvas>
-                <canvas id="thresh-clock" width="160" height="60"></canvas>
-              </div>
-              <span class="preview-val" id="ocr-val-clock">--:--</span>
-            </div>
-            
-            <div class="warped-preview-item" data-field="quarter">
-              <span class="preview-label">Quarto</span>
-              <div class="preview-canvas-box">
-                <canvas id="warped-quarter" width="40" height="60"></canvas>
-                <canvas id="thresh-quarter" width="40" height="60"></canvas>
-              </div>
-              <span class="preview-val" id="ocr-val-quarter">-</span>
-            </div>
-            
-            <div class="warped-preview-item" data-field="homeFouls">
-              <span class="preview-label">Falli Casa</span>
-              <div class="preview-canvas-box">
-                <canvas id="warped-homeFouls" width="40" height="60"></canvas>
-                <canvas id="thresh-homeFouls" width="40" height="60"></canvas>
-              </div>
-              <span class="preview-val" id="ocr-val-homeFouls">-</span>
-            </div>
-            
-            <div class="warped-preview-item" data-field="awayFouls">
-              <span class="preview-label">Falli Ospiti</span>
-              <div class="preview-canvas-box">
-                <canvas id="warped-awayFouls" width="40" height="60"></canvas>
-                <canvas id="thresh-awayFouls" width="40" height="60"></canvas>
-              </div>
-              <span class="preview-val" id="ocr-val-awayFouls">-</span>
-            </div>
-          </div>
+        <div style="font-size: 0.8rem; color: var(--text-secondary);">
+          OpenCV: <span id="status-opencv" class="badge badge-neutral">Caricamento...</span>
         </div>
+        <div style="font-size: 0.8rem; color: var(--text-secondary);">
+          Stato OCR: <span id="status-ocr-active" style="color: var(--color-warning); font-weight: bold;">In attesa calibrazione...</span>
+        </div>
+      </div>
+
+      <!-- Current Digits Debug Overlay -->
+      <div style="position: absolute; bottom: 20px; right: 20px; background: rgba(15, 23, 42, 0.85); 
+                  border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; z-index: 100;
+                  font-family: monospace; font-size: 0.9rem; min-width: 180px; display: flex; flex-direction: column; gap: 4px;">
+        <div style="color: var(--text-secondary); font-family: var(--font-title); font-size: 0.8rem; font-weight: bold; margin-bottom: 4px;">Dati Rilevati:</div>
+        <div>CASA Punti: <span id="dbg-homeScore" style="color: #3b82f6; font-weight: bold;">--</span></div>
+        <div>OSPITI Punti: <span id="dbg-awayScore" style="color: #ef4444; font-weight: bold;">--</span></div>
+        <div>Cronometro: <span id="dbg-clock" style="color: #f59e0b; font-weight: bold;">--:--</span></div>
+        <div>Quarto: <span id="dbg-quarter" style="color: #a855f7; font-weight: bold;">-</span></div>
+        <div>CASA Falli: <span id="dbg-homeFouls" style="color: #10b981; font-weight: bold;">-</span></div>
+        <div>OSPITI Falli: <span id="dbg-awayFouls" style="color: #ec4899; font-weight: bold;">-</span></div>
+      </div>
+      
+      <!-- Hidden canvas for OpenCV processing -->
+      <canvas id="canvas-calibration" class="hidden"></canvas>
+      
+      <!-- Hidden warped/thresh preview elements for imshow compatibility -->
+      <div class="hidden">
+        <canvas id="warped-homeScore"></canvas><canvas id="thresh-homeScore"></canvas>
+        <canvas id="warped-awayScore"></canvas><canvas id="thresh-awayScore"></canvas>
+        <canvas id="warped-clock"></canvas><canvas id="thresh-clock"></canvas>
+        <canvas id="warped-quarter"></canvas><canvas id="thresh-quarter"></canvas>
+        <canvas id="warped-homeFouls"></canvas><canvas id="thresh-homeFouls"></canvas>
+        <canvas id="warped-awayFouls"></canvas><canvas id="thresh-awayFouls"></canvas>
       </div>
     </div>
 

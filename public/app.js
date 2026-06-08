@@ -66,6 +66,17 @@ let pcA = null;
 const iceQueueA = [];
 let remoteSetA = false;
 
+// Role A (Director) WebRTC Connection to C
+let pcC_recv = null;
+const iceQueueC_recv = [];
+let remoteSetC_recv = false;
+
+// Calibration variables for role A
+let cNativeWidth = 1920;
+let cNativeHeight = 1080;
+const rois = Array(6).fill(null).map(() => []);
+const roiFieldNames = ['homeScore', 'awayScore', 'clock', 'quarter', 'homeFouls', 'awayFouls'];
+
 // Role B (Camera) Preview & WebRTC state
 let zoomLevel = 1.0;
 let cameraStream = null;
@@ -307,31 +318,77 @@ async function handleMessageA(msg) {
   }
 
   if (msg.type === 'offer') {
-    if (!pcA) {
-      pcA = new RTCPeerConnection(ICE_CONFIG);
-      bindPeerConnectionAEvents();
+    if (msg.role === 'C') {
+      if (!pcC_recv) {
+        pcC_recv = new RTCPeerConnection(ICE_CONFIG);
+        bindPeerConnectionCRecvEvents();
+      }
+      await pcC_recv.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+      remoteSetC_recv = true;
+      for (const c of iceQueueC_recv) {
+        await pcC_recv.addIceCandidate(new RTCIceCandidate(c));
+      }
+      iceQueueC_recv.length = 0;
+      
+      const answer = await pcC_recv.createAnswer();
+      await pcC_recv.setLocalDescription(answer);
+      ws.send(JSON.stringify({
+        type: 'answer',
+        sdp: answer,
+        role: 'C',
+        matchId
+      }));
+    } else {
+      if (!pcA) {
+        pcA = new RTCPeerConnection(ICE_CONFIG);
+        bindPeerConnectionAEvents();
+      }
+      await pcA.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+      remoteSetA = true;
+      for (const c of iceQueueA) {
+        await pcA.addIceCandidate(new RTCIceCandidate(c));
+      }
+      iceQueueA.length = 0;
+      
+      const answer = await pcA.createAnswer();
+      await pcA.setLocalDescription(answer);
+      ws.send(JSON.stringify({
+        type: 'answer',
+        sdp: answer,
+        role: 'B',
+        matchId
+      }));
     }
-    await pcA.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-    remoteSetA = true;
-    for (const c of iceQueueA) {
-      await pcA.addIceCandidate(new RTCIceCandidate(c));
-    }
-    iceQueueA.length = 0;
-    
-    const answer = await pcA.createAnswer();
-    await pcA.setLocalDescription(answer);
-    ws.send(JSON.stringify({
-      type: 'answer',
-      sdp: answer,
-      matchId
-    }));
   }
 
   if (msg.type === 'ice') {
-    if (remoteSetA) {
-      await pcA.addIceCandidate(new RTCIceCandidate(msg.candidate));
+    if (msg.role === 'C') {
+      if (remoteSetC_recv) {
+        await pcC_recv.addIceCandidate(new RTCIceCandidate(msg.candidate));
+      } else {
+        iceQueueC_recv.push(msg.candidate);
+      }
     } else {
-      iceQueueA.push(msg.candidate);
+      if (remoteSetA) {
+        await pcA.addIceCandidate(new RTCIceCandidate(msg.candidate));
+      } else {
+        iceQueueA.push(msg.candidate);
+      }
+    }
+  }
+
+  if (msg.type === 'videoInfo') {
+    cNativeWidth = msg.width;
+    cNativeHeight = msg.height;
+    console.log(`VideoInfo ricevuto da C: ${cNativeWidth}x${cNativeHeight}`);
+    // Redraw overlay in case scale changes
+    drawCalibOverlayA();
+  }
+
+  if (msg.type === 'calibrationAck') {
+    const calibInst = document.getElementById('calibInstructions');
+    if (calibInst) {
+      calibInst.textContent = 'Calibrazione applicata con successo su C ✓';
     }
   }
 
@@ -364,10 +421,58 @@ async function handleMessageB(msg) {
   }
 }
 
+// Role C (OCR) WebRTC state
+let pcC = null;
+const iceQueueC = [];
+let remoteSetC = false;
+
 async function handleMessageC(msg) {
   if (msg.type === 'joined') {
-    document.getElementById('status-ocr-c').innerText = 'Connesso';
-    document.getElementById('status-ocr-c').className = 'badge badge-primary';
+    const statusEl = document.getElementById('status-ocr-c');
+    if (statusEl) {
+      statusEl.innerText = 'Connesso';
+      statusEl.className = 'badge badge-primary';
+    }
+  }
+  if (msg.type === 'start') {
+    await startWebRTCC();
+  }
+  if (msg.type === 'answer') {
+    await pcC.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    remoteSetC = true;
+    for (const c of iceQueueC) {
+      await pcC.addIceCandidate(new RTCIceCandidate(c));
+    }
+    iceQueueC.length = 0;
+  }
+  if (msg.type === 'ice') {
+    if (remoteSetC) {
+      await pcC.addIceCandidate(new RTCIceCandidate(msg.candidate));
+    } else {
+      iceQueueC.push(msg.candidate);
+    }
+  }
+  if (msg.type === 'calibration') {
+    console.log('Calibrazione ricevuta da A:', msg.rois);
+    calibPoints.homeScore = msg.rois[0] || [];
+    calibPoints.awayScore = msg.rois[1] || [];
+    calibPoints.clock = msg.rois[2] || [];
+    calibPoints.quarter = msg.rois[3] || [];
+    calibPoints.homeFouls = msg.rois[4] || [];
+    calibPoints.awayFouls = msg.rois[5] || [];
+    saveCalibration();
+    
+    // Ack calibration back to A
+    ws.send(JSON.stringify({
+      type: 'calibrationAck',
+      matchId
+    }));
+    
+    const activeBadge = document.getElementById('status-ocr-active');
+    if (activeBadge) {
+      activeBadge.innerText = 'OCR Attivo';
+      activeBadge.style.color = '#10b981';
+    }
   }
 }
 
@@ -514,6 +619,7 @@ async function startWebRTC() {
         type: 'ice',
         candidate: e.candidate,
         target: 'A',
+        role: 'B',
         matchId
       }));
     }
@@ -528,6 +634,7 @@ async function startWebRTC() {
   ws.send(JSON.stringify({
     type: 'offer',
     sdp: offer,
+    role: 'B',
     matchId
   }));
 }
@@ -549,31 +656,16 @@ async function initCameraBoard() {
       try {
         calibPoints = JSON.parse(savedPoints);
         console.log('Calibrazione caricata da LocalStorage.');
+        
+        const activeBadge = document.getElementById('status-ocr-active');
+        if (activeBadge) {
+          activeBadge.innerText = 'OCR Attivo';
+          activeBadge.style.color = '#10b981';
+        }
       } catch (e) {
         console.warn('Errore lettura calibrazione salvata.');
       }
     }
-
-    // Bind UI calibration selectors
-    const selectRoi = document.getElementById('select-roi');
-    selectRoi.addEventListener('change', (e) => {
-      currentRoiField = e.target.value;
-    });
-
-    document.getElementById('btn-clear-roi').onclick = () => {
-      calibPoints[currentRoiField] = [];
-      saveCalibration();
-      drawCalibrationLayer();
-    };
-
-    const slider = document.getElementById('slider-threshold');
-    slider.oninput = (e) => {
-      const val = parseInt(e.target.value, 10);
-      document.getElementById('val-threshold-slider').innerText = val === 0 ? 'Auto' : val;
-    };
-
-    // Tap corners listener
-    canvasCalib.addEventListener('click', handleCalibrationTap);
 
     cameraStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -741,6 +833,9 @@ function initDirector() {
   // Setup Recording Trigger
   const btnToggleRec = document.getElementById('btn-toggle-rec');
   btnToggleRec.addEventListener('click', toggleRecording);
+
+  // Setup Role A Calibration bindings
+  initCalibA();
 }
 
 // Rendering Broadcast Canvas with Custom Scoreboard Overlay
@@ -1457,7 +1552,8 @@ function processRoiField(srcMat, field, points) {
   }
 
   let thresh = new cv.Mat();
-  const sliderVal = parseInt(document.getElementById('slider-threshold').value, 10);
+  const sliderEl = document.getElementById('slider-threshold');
+  const sliderVal = sliderEl ? parseInt(sliderEl.value, 10) : 0;
   
   if (sliderVal === 0) {
     cv.threshold(equalized, thresh, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
@@ -1629,6 +1725,11 @@ function validateAndPublishOcrValue(field, value) {
     uiEl.innerText = lastValidOcr[field];
     uiEl.style.color = isValid ? '#f59e0b' : '#ef4444'; 
   }
+  const dbgEl = document.getElementById(`dbg-${field}`);
+  if (dbgEl) {
+    dbgEl.innerText = lastValidOcr[field];
+    dbgEl.style.color = isValid ? '#10b981' : '#ef4444';
+  }
 }
 
 function sendOcrStateToDirector() {
@@ -1647,5 +1748,215 @@ function sendOcrStateToDirector() {
       matchId,
       data: dataPacket
     }));
+  }
+}
+
+// ==========================================================================
+// WebRTC Streaming & Remote Calibration Helpers (Roles A & C)
+// ==========================================================================
+
+async function startWebRTCC() {
+  console.log('Avvio WebRTC da C...');
+  pcC = new RTCPeerConnection(ICE_CONFIG);
+
+  if (cameraStream) {
+    cameraStream.getVideoTracks().forEach(t => pcC.addTrack(t, cameraStream));
+  }
+
+  pcC.onicecandidate = (e) => {
+    if (e.candidate) {
+      ws.send(JSON.stringify({
+        type: 'ice',
+        candidate: e.candidate,
+        target: 'A',
+        role: 'C',
+        matchId
+      }));
+    }
+  };
+
+  pcC.oniceconnectionstatechange = () => {
+    console.log('ICE Connection State C:', pcC.iceConnectionState);
+    if (pcC.iceConnectionState === 'connected') {
+      const video = document.getElementById('video-preview-c');
+      if (video) {
+        ws.send(JSON.stringify({
+          type: 'videoInfo',
+          width: video.videoWidth,
+          height: video.videoHeight,
+          matchId
+        }));
+      }
+    }
+  };
+
+  const offer = await pcC.createOffer();
+  await pcC.setLocalDescription(offer);
+  ws.send(JSON.stringify({
+    type: 'offer',
+    sdp: offer,
+    role: 'C',
+    matchId
+  }));
+}
+
+function bindPeerConnectionCRecvEvents() {
+  pcC_recv.onicecandidate = (e) => {
+    if (e.candidate) {
+      ws.send(JSON.stringify({
+        type: 'ice',
+        candidate: e.candidate,
+        target: 'C',
+        matchId
+      }));
+    }
+  };
+
+  pcC_recv.oniceconnectionstatechange = () => {
+    console.log('ICE Connection State C Receiver:', pcC_recv.iceConnectionState);
+  };
+
+  pcC_recv.ontrack = (event) => {
+    console.log('Track ricevuto da C:', event.streams);
+    const videoFromC = document.getElementById('videoFromC');
+    if (videoFromC) {
+      videoFromC.srcObject = event.streams[0];
+      videoFromC.play().catch(e => console.error('Play error on videoFromC:', e));
+    }
+  };
+}
+
+function initCalibA() {
+  const videoC = document.getElementById('videoFromC');
+  const calibOverlay = document.getElementById('calibOverlay');
+  const roiSelect = document.getElementById('roiSelect');
+  const sendCalib = document.getElementById('sendCalib');
+  const resetCalib = document.getElementById('resetCalib');
+
+  if (!videoC || !calibOverlay || !roiSelect || !sendCalib || !resetCalib) {
+    console.warn('Calibration controls not found (not role A).');
+    return;
+  }
+
+  // Setup overlay drawing when video dimensions resize
+  const resizeObserver = new ResizeObserver(() => {
+    drawCalibOverlayA();
+  });
+  resizeObserver.observe(videoC);
+
+  // Click handler on videoFromC
+  videoC.addEventListener('click', (e) => {
+    const rect = videoC.getBoundingClientRect();
+
+    const displayX = e.clientX - rect.left;
+    const displayY = e.clientY - rect.top;
+
+    const scaleX = cNativeWidth / rect.width;
+    const scaleY = cNativeHeight / rect.height;
+    const nativeX = Math.round(displayX * scaleX);
+    const nativeY = Math.round(displayY * scaleY);
+
+    const activeRoi = parseInt(roiSelect.value, 10);
+    if (rois[activeRoi].length < 4) {
+      rois[activeRoi].push({ x: nativeX, y: nativeY });
+      updateCalibProgress();
+      drawCalibOverlayA();
+    }
+  });
+
+  roiSelect.addEventListener('change', () => {
+    drawCalibOverlayA();
+  });
+
+  sendCalib.addEventListener('click', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'calibration',
+        rois: rois,
+        matchId,
+        target: 'C'
+      }));
+      document.getElementById('calibInstructions').textContent = 'Calibrazione inviata a C ✓';
+      sendCalib.disabled = true;
+    }
+  });
+
+  resetCalib.addEventListener('click', () => {
+    rois.forEach(r => r.length = 0);
+    updateCalibProgress();
+    document.getElementById('calibInstructions').textContent = 'Tocca i 4 angoli della zona selezionata';
+    sendCalib.disabled = true;
+    drawCalibOverlayA();
+  });
+}
+
+function drawCalibOverlayA() {
+  const canvas = document.getElementById('calibOverlay');
+  const videoC = document.getElementById('videoFromC');
+  if (!canvas || !videoC) return;
+  const ctx = canvas.getContext('2d');
+  
+  canvas.width = videoC.clientWidth;
+  canvas.height = videoC.clientHeight;
+  
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  const roiSelect = document.getElementById('roiSelect');
+  if (!roiSelect) return;
+  const activeRoi = parseInt(roiSelect.value, 10);
+  
+  for (let i = 0; i < 6; i++) {
+    const field = roiFieldNames[i];
+    const points = rois[i];
+    const isCurrent = i === activeRoi;
+    
+    ctx.fillStyle = roiColors[field];
+    ctx.strokeStyle = roiColors[field];
+    ctx.lineWidth = isCurrent ? 4 : 1.5;
+    
+    points.forEach((p, idx) => {
+      const scaleX = canvas.width / cNativeWidth;
+      const scaleY = canvas.height / cNativeHeight;
+      const displayX = p.x * scaleX;
+      const displayY = p.y * scaleY;
+      
+      ctx.beginPath();
+      ctx.arc(displayX, displayY, isCurrent ? 6 : 3, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      ctx.font = isCurrent ? 'bold 12px Inter, sans-serif' : '9px Inter, sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(idx + 1, displayX + 6, displayY - 6);
+      ctx.fillStyle = roiColors[field];
+    });
+    
+    if (points.length > 0) {
+      const displayPoints = points.map(p => ({
+        x: p.x * (canvas.width / cNativeWidth),
+        y: p.y * (canvas.height / cNativeHeight)
+      }));
+      
+      ctx.beginPath();
+      ctx.moveTo(displayPoints[0].x, displayPoints[0].y);
+      for (let idx = 1; idx < displayPoints.length; idx++) {
+        ctx.lineTo(displayPoints[idx].x, displayPoints[idx].y);
+      }
+      if (displayPoints.length === 4) {
+        ctx.closePath();
+      }
+      ctx.stroke();
+    }
+  }
+}
+
+function updateCalibProgress() {
+  const done = rois.filter(r => r.length === 4).length;
+  const progressEl = document.getElementById('calibProgress');
+  const sendBtn = document.getElementById('sendCalib');
+  if (progressEl) {
+    progressEl.textContent = `${done}/6 zone calibrate`;
+  }
+  if (sendBtn) {
+    sendBtn.disabled = done < 6;
   }
 }

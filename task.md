@@ -1,14 +1,9 @@
-# Execution Checklist
+# Execution Checklist — C-to-A Video & Remote Calibration
 
-- `[x]` Update `download-opencv.js` with early existence check.
-- `[x]` Update `server.js` with the matches registry and clean routing functions.
-- `[x]` Update `public/index.html` structure for Role B, add indicators and buttons for Role A, and remove redundant zoom controls.
-- `[x]` Update `public/app.js` with the clean rewrite of B's local preview/canvas loop, B's WebRTC start, A's `avviaPartita()`, A/B/C WebSocket routing delegates, and zoom event listeners.
-- `[x]` Verify server syntax and run build steps.
-- `[x]` Copy modified files to the repository workspace and push to git/Render.
-- `[x]` Fix duplicate DOM element ID statusB by renaming B's preview status to statusB-cam.
-- `[x]` Implement auto-signaling WebSocket connection for director role A on page load.
-- `[x]` Implement server peer joined status recall when director A joins.
-- `[x]` Implement manual clock adjust +/- buttons.
-- `[x]` Verify clean server start-up and routing.
-- `[x]` Copy all files to the repository workspace, commit and push to git.
+- `[x]` Update WebSocket message routing in `server.js` for role 'C' signalling and calibration
+- `[x]` Update HTML layouts in `public/index.html` (A's new panels and overlay canvas, C's simplified screen)
+- `[x]` Add CSS rules for `#calibOverlay` and layout grids in `public/style.css`
+- `[x]` Implement WebRTC video sender, resolution reporting (`videoInfo`), and remote calibration receiver in `public/app.js` (Role C)
+- `[x]` Implement second WebRTC receiver, coordinate mapping, interactive overlay drawing, and calibration dispatch in `public/app.js` (Role A)
+- `[x]` Verify local compilation and server startup
+- `[x]` Sync modified files to workspace, commit, and deploy

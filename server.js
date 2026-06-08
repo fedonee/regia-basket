@@ -56,40 +56,64 @@ wss.on('connection', (ws) => {
 
         case 'start': {
           const { matchId } = message;
-          // Forward 'start' command to B
+          // Forward 'start' command to B and C
           const peerB = rooms[matchId]?.B;
-          if (peerB) {
-            sendTo(peerB, { type: 'start' });
-          }
+          const peerC = rooms[matchId]?.C;
+          if (peerB) sendTo(peerB, { type: 'start' });
+          if (peerC) sendTo(peerC, { type: 'start' });
           break;
         }
 
         case 'offer': {
-          const { matchId, sdp } = message;
-          // Forward offer from B to A
+          const { matchId, sdp, role } = message; // role can be B or C
           const host = rooms[matchId]?.A;
           if (host) {
-            sendTo(host, { type: 'offer', sdp });
+            sendTo(host, { type: 'offer', sdp, role });
           }
           break;
         }
 
         case 'answer': {
-          const { matchId, sdp } = message;
-          // Forward answer from A to B
-          const peerB = rooms[matchId]?.B;
-          if (peerB) {
-            sendTo(peerB, { type: 'answer', sdp });
+          const { matchId, sdp, role } = message; // role specifies recipient B or C
+          const peer = rooms[matchId]?.[role];
+          if (peer) {
+            sendTo(peer, { type: 'answer', sdp });
           }
           break;
         }
 
         case 'ice': {
-          const { matchId, target, candidate } = message;
-          // Forward ice candidate to the target (A or B)
+          const { matchId, target, candidate, role } = message;
           const peer = rooms[matchId]?.[target];
           if (peer) {
-            sendTo(peer, { type: 'ice', candidate });
+            sendTo(peer, { type: 'ice', candidate, role });
+          }
+          break;
+        }
+
+        case 'videoInfo': {
+          const { matchId, width, height } = message;
+          const host = rooms[matchId]?.A;
+          if (host) {
+            sendTo(host, { type: 'videoInfo', width, height, role: 'C' });
+          }
+          break;
+        }
+
+        case 'calibration': {
+          const { matchId, rois } = message;
+          const peerC = rooms[matchId]?.C;
+          if (peerC) {
+            sendTo(peerC, { type: 'calibration', rois });
+          }
+          break;
+        }
+
+        case 'calibrationAck': {
+          const { matchId } = message;
+          const host = rooms[matchId]?.A;
+          if (host) {
+            sendTo(host, { type: 'calibrationAck' });
           }
           break;
         }
